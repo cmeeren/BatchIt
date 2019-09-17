@@ -5,6 +5,7 @@ open System.Collections.Generic
 open System.Threading.Tasks
 
 
+[<AutoOpen>]
 module private Batch =
 
 
@@ -176,9 +177,6 @@ module private Batch =
         let! nonBatched = agent.PostAndAsyncReply (fun replyChannel -> Add (replyChannel, x))
         return! nonBatched x
       }
-
-
-open Batch
 
 
 [<AbstractClass; Sealed>]
