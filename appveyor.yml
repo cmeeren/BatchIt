@@ -5,7 +5,6 @@ build:
 
 artifacts:
   - path: /src/**/*.nupkg
-  - path: /src/**/*.snupkg
 
 build_script:
   - cmd: dotnet build -c Release
@@ -16,4 +15,3 @@ deploy:
       secure: 76pT4XVazxd6F1YlTe50ZnCRKf2ggm/SBxE3y9VHedSuFm7INQ9CgDicM8IZpapY
     on:
       appveyor_repo_tag: true
-    skip_symbols: false
