@@ -88,6 +88,10 @@ Contributions and ideas are welcome! Please see [Contributing.md](https://github
 Release notes
 -------------
 
+### 1.0.2
+
+* Embed symbols
+
 ### 1.0.0
 
 * Initial release
