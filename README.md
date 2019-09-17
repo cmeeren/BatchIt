@@ -47,11 +47,11 @@ let getPersonBatched (args: FindArgs array) : Async<(FindArgs * Person option) a
       rows
       |> Seq.toArray
       |> Array.groupBy (fun r -> 
-        { PersonId = r.inputPersonId; TenantId = inputTenantId }
+        { PersonId = r.inputPersonId; TenantId = r.inputTenantId }
       )
       |> Array.map (fun (batchKey, rows) -> 
         batchKey,
-	    rows |> Array.tryHead |> Option.map (fun r -> { Name = r.name })
+	      rows |> Array.tryHead |> Option.map (fun r -> { Name = r.name })
       )
     }
   
