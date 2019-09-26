@@ -56,6 +56,6 @@ For maintainers.
 
 * Make necessary changes to the code
 * Update the changelog
-* Update the version and release notes in the fsproj files
+* Update the version and release notes in the fsproj file
 * Commit and tag the commit (this is what triggers deployment from AppVeyor). For consistency, the tag should be identical to the version (e.g. `1.2.3`).
 * Push the changes and the tag to the repo. If the AppVeyor build succeeds, the package is automatically published to NuGet.
