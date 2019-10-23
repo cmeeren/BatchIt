@@ -83,7 +83,7 @@ BatchIt’s only public API is the `Batch.Create` overloads. You have the follow
 Contributing
 ------------
 
-Contributions and ideas are welcome! Please see [Contributing.md](https://github.com/cmeeren/FSharp.JsonApi/blob/master/.github/CONTRIBUTING.md) for details.
+Contributions and ideas are welcome! Please see [Contributing.md](https://github.com/cmeeren/BatchIt/blob/master/.github/CONTRIBUTING.md) for details.
 
 Release notes
 -------------
