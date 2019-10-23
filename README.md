@@ -16,7 +16,7 @@ Quick start
 BatchIt centers around these two function signatures:
 
 * Normal: `'a -> Async<'b>`
-* Accepts a single argument `'a` (which can be a tuple or a record if you need multiple values) and returns a single value `'b`
+  * Accepts a single argument `'a` (which can be a tuple or a record if you need multiple values) and returns a single value `'b`
 * Batched: `'a array -> Async<('a * 'b) array>'`
   * Accepts an array of `'a` (all the values to use for a single batch) and returns an array of output values `'b` together with their corresponding input values (so that BatchIt can correlate inputs with outputs).
 
