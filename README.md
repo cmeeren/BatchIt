@@ -72,9 +72,9 @@ Configuration
 
 BatchIt’s only public API is the `Batch.Create` overloads. You have the following options:
 
-* Execute the batch X ms after the first call
+* Throttle-like: Execute the batch X ms after the first call
   * Optionally also limit max batch size
-* Execute the batch X ms after the last call (timer resets when new calls come in before X ms), but wait at least Y ms and at most Z ms
+* Debounce-like: Execute the batch X ms after the last call (timer resets when new calls come in before X ms), but wait at least Y ms and at most Z ms
   * Optionally also limit max batch size
 * Specify the value the “normal” function should return if the batched output did not contain an item corresponding to the supplied input
   * For `option`, `voption`, `list`, and `array`, will automatically use `None`, `ValueNone`, `List.empty`, and `Array.empty`, respectively
