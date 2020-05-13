@@ -21,8 +21,8 @@ module private Batch =
     int (DateTime.Now - dt).TotalMilliseconds
 
 
-  type GetNonBatched<'a, 'b> = 'a -> Async<'b>
-  type GetBatched<'a, 'b> = 'a array -> Async<('a * 'b) array>
+  type private GetNonBatched<'a, 'b> = 'a -> Async<'b>
+  type private GetBatched<'a, 'b> = 'a [] -> Async<('a * 'b) []>
 
   [<Struct>]
   type NullSafeDictKey<'a> = K of 'a with
@@ -185,7 +185,7 @@ type Batch private () =
   /// Returns a non-batched version of the batched function. The batch is executed
   /// waitMs after the first call, or immediately when maxSize is reached (if specified).
   /// The returned non-batched function will return None for items that are not found.
-  static member Create(getBatched: GetBatched<'a, 'b option>, waitMs, ?maxSize) =
+  static member Create(getBatched: 'a [] -> Async<('a * 'b option) []>, waitMs, ?maxSize) =
     createBatched getBatched None waitMs ValueNone waitMs (defaultArg maxSize Int32.MaxValue)
 
   /// Returns a non-batched version of the batched function. For each call,
@@ -193,13 +193,13 @@ type Batch private () =
   /// but the batch waits at least initialWaitMs and at most maxWaitMs  after the first
   /// call. The batch is also run immediately when maxSize is reached (if specified).
   /// The returned non-batched function will return None for items that are not found.
-  static member Create(getBatched: GetBatched<'a, 'b option>, minWaitAfterAddMs, minWaitMs, maxWaitMs, ?maxSize) =
+  static member Create(getBatched: 'a [] -> Async<('a * 'b option) []>, minWaitAfterAddMs, minWaitMs, maxWaitMs, ?maxSize) =
     createBatched getBatched None minWaitMs (ValueSome minWaitAfterAddMs) maxWaitMs (defaultArg maxSize Int32.MaxValue)
 
   /// Returns a non-batched version of the batched function. The batch is executed
   /// waitMs after the first call, or immediately when maxSize is reached (if specified).
   /// The returned non-batched function will return ValueNone for items that are not found.
-  static member Create(getBatched: GetBatched<'a, 'b voption>, waitMs, ?maxSize) =
+  static member Create(getBatched: 'a [] -> Async<('a * 'b voption) []>, waitMs, ?maxSize) =
     createBatched getBatched ValueNone waitMs ValueNone waitMs (defaultArg maxSize Int32.MaxValue)
 
   /// Returns a non-batched version of the batched function. For each call,
@@ -207,13 +207,13 @@ type Batch private () =
   /// but the batch waits at least initialWaitMs and at most maxWaitMs  after the first
   /// call. The batch is also run immediately when maxSize is reached (if specified).
   /// The returned non-batched function will return ValueNone for items that are not found.
-  static member Create(getBatched: GetBatched<'a, 'b voption>, minWaitAfterAddMs, minWaitMs, maxWaitMs, ?maxSize) =
+  static member Create(getBatched: 'a [] -> Async<('a * 'b voption) []>, minWaitAfterAddMs, minWaitMs, maxWaitMs, ?maxSize) =
     createBatched getBatched ValueNone minWaitMs (ValueSome minWaitAfterAddMs) maxWaitMs (defaultArg maxSize Int32.MaxValue)
 
   /// Returns a non-batched version of the batched function. The batch is executed
   /// waitMs after the first call, or immediately when maxSize is reached (if specified).
   /// The returned non-batched function will return an empty list for items that are not found.
-  static member Create(getBatched: GetBatched<'a, 'b list>, waitMs, ?maxSize) =
+  static member Create(getBatched: 'a [] -> Async<('a * 'b list) []>, waitMs, ?maxSize) =
     createBatched getBatched [] waitMs ValueNone waitMs (defaultArg maxSize Int32.MaxValue)
 
   /// Returns a non-batched version of the batched function. For each call,
@@ -221,13 +221,13 @@ type Batch private () =
   /// but the batch waits at least initialWaitMs and at most maxWaitMs  after the first
   /// call. The batch is also run immediately when maxSize is reached (if specified).
   /// The returned non-batched function will return an empty list for items that are not found.
-  static member Create(getBatched: GetBatched<'a, 'b list>, minWaitAfterAddMs, minWaitMs, maxWaitMs, ?maxSize) =
+  static member Create(getBatched: 'a [] -> Async<('a * 'b list) []>, minWaitAfterAddMs, minWaitMs, maxWaitMs, ?maxSize) =
     createBatched getBatched [] minWaitMs (ValueSome minWaitAfterAddMs) maxWaitMs (defaultArg maxSize Int32.MaxValue)
 
   /// Returns a non-batched version of the batched function. The batch is executed
   /// waitMs after the first call, or immediately when maxSize is reached (if specified).
   /// The returned non-batched function will return an empty array for items that are not found.
-  static member Create(getBatched: GetBatched<'a, 'b array>, waitMs, ?maxSize) =
+  static member Create(getBatched: 'a [] -> Async<('a * 'b []) []>, waitMs, ?maxSize) =
     createBatched getBatched [||] waitMs ValueNone waitMs (defaultArg maxSize Int32.MaxValue)
 
   /// Returns a non-batched version of the batched function. For each call,
@@ -235,13 +235,13 @@ type Batch private () =
   /// but the batch waits at least initialWaitMs and at most maxWaitMs  after the first
   /// call. The batch is also run immediately when maxSize is reached (if specified).
   /// The returned non-batched function will return an empty array for items that are not found.
-  static member Create(getBatched: GetBatched<'a, 'b array>, minWaitAfterAddMs, minWaitMs, maxWaitMs, ?maxSize) =
+  static member Create(getBatched: 'a [] -> Async<('a * 'b []) []>, minWaitAfterAddMs, minWaitMs, maxWaitMs, ?maxSize) =
     createBatched getBatched [||] minWaitMs (ValueSome minWaitAfterAddMs) maxWaitMs (defaultArg maxSize Int32.MaxValue)
 
   /// Returns a non-batched version of the batched function. The batch is executed
   /// waitMs after the first call, or immediately when maxSize is reached (if specified).
   /// The returned non-batched function will return notFound for items that are not found.
-  static member Create(getBatched: GetBatched<'a, 'b>, notFound, waitMs, ?maxSize) =
+  static member Create(getBatched: 'a [] -> Async<('a * 'b) []>, notFound, waitMs, ?maxSize) =
     createBatched getBatched notFound waitMs ValueNone waitMs (defaultArg maxSize Int32.MaxValue)
 
   /// Returns a non-batched version of the batched function. For each call,
@@ -249,5 +249,5 @@ type Batch private () =
   /// but the batch waits at least initialWaitMs and at most maxWaitMs  after the first
   /// call. The batch is also run immediately when maxSize is reached (if specified).
   /// The returned non-batched function will return notFound for items that are not found.
-  static member Create(getBatched: GetBatched<'a, 'b>, notFound, minWaitAfterAddMs, minWaitMs, maxWaitMs, ?maxSize) =
+  static member Create(getBatched: 'a [] -> Async<('a * 'b) []>, notFound, minWaitAfterAddMs, minWaitMs, maxWaitMs, ?maxSize) =
     createBatched getBatched notFound minWaitMs (ValueSome minWaitAfterAddMs) maxWaitMs (defaultArg maxSize Int32.MaxValue)
