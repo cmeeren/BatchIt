@@ -9,6 +9,9 @@ artifacts:
 build_script:
   - cmd: dotnet build -c Release
 
+test_script:
+  - cmd: dotnet test src -c Release
+
 deploy:
   - provider: NuGet
     api_key:
