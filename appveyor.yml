@@ -10,7 +10,7 @@ build_script:
   - cmd: dotnet build -c Release
 
 test_script:
-  - cmd: dotnet test src -c Release
+  - cmd: dotnet test -c Release
 
 deploy:
   - provider: NuGet
