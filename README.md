@@ -3,7 +3,7 @@ BatchIt
 
 BatchIt is a very simple F# library that allows you to write batched async functions and consume them as if they were non-batched.
 
-It’s useful if you have DB queries that are executed very frequently. This may for example be the case when using GraphQL resolvers or similar (e.g. JSON-API with [FSharp.JsonApi](https://github.com/cmeeren/FSharp.JsonApi)). BatchIt will also transparently take care of deduplicating your input arguments, so that the batched function receives a distinct set of inputs.
+It’s useful if you have DB queries that are executed very frequently. This may for example be the case when using GraphQL resolvers or similar (e.g. JSON-API with [Felicity](https://github.com/cmeeren/Felicity)). BatchIt will also transparently take care of deduplicating your input arguments, so that the batched function receives a distinct set of inputs.
 
 Installation
 ------------
