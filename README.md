@@ -17,7 +17,7 @@ BatchIt centers around these two function signatures:
 
 * Normal: `'a -> Async<'b>`
   * Accepts a single argument `'a` (which can be a tuple or a record if you need multiple values) and returns a single value `'b`
-* Batched: `'a array -> Async<('a * 'b) array>'`
+* Batched: `'a [] -> Async<('a * 'b) []>'`
   * Accepts an array of `'a` (all the values to use for a single batch) and returns an array of output values `'b` together with their corresponding input values (so that BatchIt can correlate inputs with outputs).
 
 Your job is to implement the batched function, and then you use BatchIt to configure timing and convert it to the normal version. Any calls to the normal version will then be batched using your configuration and your batched function.
@@ -28,7 +28,7 @@ Your job is to implement the batched function, and then you use BatchIt to confi
 type Person = { Name: string }
 type FindArgs = { PersonId: Guid; TenantId: Guid }
 
-let getPersonBatched (args: FindArgs array) : Async<(FindArgs * Person option) array> =
+let getPersonBatched (args: FindArgs []) : Async<(FindArgs * Person option) []> =
   async {
     // BatchIt is not concerned with what actually happens inside this function.
   
