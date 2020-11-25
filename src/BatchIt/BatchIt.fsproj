@@ -12,8 +12,8 @@
     <Authors>Christer van der Meeren</Authors>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageTags>f# fsharp batching batch-processing</PackageTags>
-    <Version>1.1.0</Version>
-    <PackageReleaseNotes>Add extra argument support (e.g. for passing connection strings)</PackageReleaseNotes>
+    <Version>1.2.0</Version>
+    <PackageReleaseNotes>Added helper overloads for batched functions returning Async&lt;unit&gt;</PackageReleaseNotes>
   </PropertyGroup>
 
   <PropertyGroup>

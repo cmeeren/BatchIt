@@ -221,6 +221,62 @@ type Batch private () =
     createBatched getBatched None minWaitMs (ValueSome minWaitAfterAddMs) maxWaitMs (defaultArg maxSize Int32.MaxValue)
 
   /// Returns a non-batched version of the batched function. The batch is executed waitMs
+  /// after the first call, or immediately when maxSize is reached (if specified).
+  static member Create(runBatched: 'a [] -> Async<unit>, waitMs, ?maxSize) : 'a -> Async<unit> =
+    let getBatched () args =
+      async {
+        do! runBatched args
+        return args |> Array.map (fun x -> x, ())
+      }
+    let b = createBatched getBatched () waitMs ValueNone waitMs (defaultArg maxSize Int32.MaxValue)
+    fun a -> b () a
+
+  /// Returns a non-batched version of the batched function. The batch is executed waitMs
+  /// after the first call, or immediately when maxSize is reached (if specified).
+  ///
+  /// The 'extra arg allows you to pass e.g. a connection string. If the non-batched
+  /// function is called with different 'extra arguments, all values are still collected
+  /// and run as part of the same batch (regarding timing, max size, etc.), but the
+  /// batched function is invoked once for each unique 'extra value.
+  static member Create(runBatched: 'extra -> 'a [] -> Async<unit>, waitMs, ?maxSize) : 'extra -> 'a -> Async<unit> =
+    let getBatched extra args =
+      async {
+        do! runBatched extra args
+        return args |> Array.map (fun x -> x, ())
+      }
+    createBatched getBatched () waitMs ValueNone waitMs (defaultArg maxSize Int32.MaxValue)
+
+  /// Returns a non-batched version of the batched function. For each call, the batch
+  /// execution is pushed forward to minWaitAfterAddMs after the call, but the batch waits
+  /// at least initialWaitMs and at most maxWaitMs  after the first call. The batch is
+  /// also run immediately when maxSize is reached (if specified).
+  static member Create(runBatched: 'a [] -> Async<unit>, minWaitAfterAddMs, minWaitMs, maxWaitMs, ?maxSize) : 'a -> Async<unit> =
+    let getBatched () args =
+      async {
+        do! runBatched args
+        return args |> Array.map (fun x -> x, ())
+      }
+    let b = createBatched getBatched () minWaitMs (ValueSome minWaitAfterAddMs) maxWaitMs (defaultArg maxSize Int32.MaxValue)
+    fun a -> b () a
+
+  /// Returns a non-batched version of the batched function. For each call, the batch
+  /// execution is pushed forward to minWaitAfterAddMs after the call, but the batch waits
+  /// at least initialWaitMs and at most maxWaitMs  after the first call. The batch is
+  /// also run immediately when maxSize is reached (if specified).
+  ///
+  /// The 'extra arg allows you to pass e.g. a connection string. If the non-batched
+  /// function is called with different 'extra arguments, all values are still collected
+  /// and run as part of the same batch (regarding timing, max size, etc.), but the
+  /// batched function is invoked once for each unique 'extra value.
+  static member Create(runBatched: 'extra -> 'a [] -> Async<unit>, minWaitAfterAddMs, minWaitMs, maxWaitMs, ?maxSize) : 'extra -> 'a -> Async<unit> =
+    let getBatched extra args =
+      async {
+        do! runBatched extra args
+        return args |> Array.map (fun x -> x, ())
+      }
+    createBatched getBatched () minWaitMs (ValueSome minWaitAfterAddMs) maxWaitMs (defaultArg maxSize Int32.MaxValue)
+
+  /// Returns a non-batched version of the batched function. The batch is executed waitMs
   /// after the first call, or immediately when maxSize is reached (if specified). The
   /// returned non-batched function will return ValueNone for items that are not found.
   static member Create(getBatched: 'a [] -> Async<('a * 'b voption) []>, waitMs, ?maxSize) : 'a -> Async<('b voption)> =

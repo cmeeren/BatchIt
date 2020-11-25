@@ -95,6 +95,45 @@ let tests =
     ]
 
 
+    testList "unit return type" [
+
+
+      parallelTestCaseAsync 1000 "overloads for unit return type work" <| async {
+        let mutable calledWith = []
+        let batched (args: int []) =
+          async {
+            lock calledWith (fun () ->
+              calledWith <- calledWith @ [Array.sort args]
+            )
+          }
+        let nonBatched = Batch.Create(batched, 50)
+
+        do!
+          [1..8]
+          |> List.map nonBatched
+          |> Async.Parallel
+          |> Async.Ignore
+
+        do! Async.Sleep 50
+
+        do!
+          [9..16]
+          |> List.map nonBatched
+          |> Async.Parallel
+          |> Async.Ignore
+
+        do! Async.Sleep 50
+
+        do! nonBatched 17 |> Async.Ignore
+
+        let calledWith' = calledWith
+        test <@ calledWith' = [ [| 1..8 |]; [| 9..16 |]; [| 17 |]] @>
+      }
+
+
+    ]
+
+
     testList "minWaitAfterAddMs/minWaitMs/maxWaitMs" [
 
 
