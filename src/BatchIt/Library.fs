@@ -108,8 +108,8 @@ module private Batch =
       maxSize
       : MailboxProcessor<Msg<'extra, 'a, 'b>> =
 
-    /// Returns a unbatched function that returns a specified item in the batch
-    let unbatchedItemAwaiterFor batch : GetNonBatched<'extra, 'a, 'b> =
+    /// Returns a non-batched function that returns a specified item in the batch
+    let nonBatchedItemAwaiterFor batch : GetNonBatched<'extra, 'a, 'b> =
       fun _extra x ->
         async {
           let! res = batch.Result.Task |> Async.AwaitTask
@@ -144,7 +144,7 @@ module private Batch =
           | Add (replyChannel, extra, item) ->
               batch |> addItem extra item
 
-              replyChannel.Reply (unbatchedItemAwaiterFor batch)
+              replyChannel.Reply (nonBatchedItemAwaiterFor batch)
 
               if batch.Items.Count >= batch.MaxSize then
                 // Batch full, run immediately and create new batch
