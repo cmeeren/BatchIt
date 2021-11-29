@@ -7,7 +7,8 @@ artifacts:
   - path: /src/**/*.nupkg
 
 build_script:
-  - cmd: dotnet build -c Release
+  - cmd: dotnet restore --locked-mode
+  - cmd: dotnet build -c Release --no-restore
 
 test_script:
   - cmd: dotnet test -c Release --no-build -- Expecto.fail-on-focused-tests=true
