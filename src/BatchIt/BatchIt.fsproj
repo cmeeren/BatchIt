@@ -13,7 +13,7 @@
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageTags>f# fsharp batching batch-processing</PackageTags>
     <Version>1.2.0</Version>
-    <PackageReleaseNotes>Added helper overloads for batched functions returning Async&lt;unit&gt;</PackageReleaseNotes>
+    <PackageReleaseNotes>https://github.com/cmeeren/BatchIt/blob/master/RELEASE_NOTES.md</PackageReleaseNotes>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <DisableImplicitNuGetFallbackFolder>true</DisableImplicitNuGetFallbackFolder>
   </PropertyGroup>
