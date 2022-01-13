@@ -91,7 +91,7 @@ module private Batch =
     if batch.Items.Count = 0 then
       batch.FirstAdd <- DateTime.Now
     batch.LastAdd <- DateTime.Now
-    batch.Items.[struct (extra, item)] <- ()
+    batch.Items[struct (extra, item)] <- ()
 
 
   type Msg<'extra, 'a, 'b> =
