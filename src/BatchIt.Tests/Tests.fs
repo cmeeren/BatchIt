@@ -28,10 +28,11 @@ let tests =
             <| async {
                 let mutable calledWith = []
 
-                let batched (args: int[]) = async {
-                    lock calledWith (fun () -> calledWith <- calledWith @ [ Array.sort args ])
-                    return args |> Array.map (fun a -> a, Some "")
-                }
+                let batched (args: int[]) =
+                    async {
+                        lock calledWith (fun () -> calledWith <- calledWith @ [ Array.sort args ])
+                        return args |> Array.map (fun a -> a, Some "")
+                    }
 
                 let nonBatched = Batch.Create(batched, 50)
 
@@ -54,10 +55,11 @@ let tests =
             <| async {
                 let mutable calledWith = []
 
-                let batched (args: int[]) = async {
-                    lock calledWith (fun () -> calledWith <- calledWith @ [ Array.sort args ])
-                    return args |> Array.map (fun a -> a, Some "")
-                }
+                let batched (args: int[]) =
+                    async {
+                        lock calledWith (fun () -> calledWith <- calledWith @ [ Array.sort args ])
+                        return args |> Array.map (fun a -> a, Some "")
+                    }
 
                 let nonBatched = Batch.Create(batched, 50, maxSize = 5)
 
@@ -86,9 +88,8 @@ let tests =
             <| async {
                 let mutable calledWith = []
 
-                let batched (args: int[]) = async {
-                    lock calledWith (fun () -> calledWith <- calledWith @ [ Array.sort args ])
-                }
+                let batched (args: int[]) =
+                    async { lock calledWith (fun () -> calledWith <- calledWith @ [ Array.sort args ]) }
 
                 let nonBatched = Batch.Create(batched, 50)
 
@@ -117,10 +118,11 @@ let tests =
             <| async {
                 let mutable calledWith = []
 
-                let batched (args: int[]) = async {
-                    lock calledWith (fun () -> calledWith <- calledWith @ [ Array.sort args ])
-                    return args |> Array.map (fun a -> a, Some "")
-                }
+                let batched (args: int[]) =
+                    async {
+                        lock calledWith (fun () -> calledWith <- calledWith @ [ Array.sort args ])
+                        return args |> Array.map (fun a -> a, Some "")
+                    }
 
                 let nonBatched = Batch.Create(batched, 250, 0, 5000)
 
@@ -148,10 +150,11 @@ let tests =
             <| async {
                 let mutable calledWith = []
 
-                let batched (args: int[]) = async {
-                    lock calledWith (fun () -> calledWith <- calledWith @ [ Array.sort args ])
-                    return args |> Array.map (fun a -> a, Some "")
-                }
+                let batched (args: int[]) =
+                    async {
+                        lock calledWith (fun () -> calledWith <- calledWith @ [ Array.sort args ])
+                        return args |> Array.map (fun a -> a, Some "")
+                    }
 
                 let nonBatched = Batch.Create(batched, 0, 5000, 5000)
 
@@ -179,10 +182,11 @@ let tests =
             <| async {
                 let mutable calledWith = []
 
-                let batched (args: int[]) = async {
-                    lock calledWith (fun () -> calledWith <- calledWith @ [ Array.sort args ])
-                    return args |> Array.map (fun a -> a, Some "")
-                }
+                let batched (args: int[]) =
+                    async {
+                        lock calledWith (fun () -> calledWith <- calledWith @ [ Array.sort args ])
+                        return args |> Array.map (fun a -> a, Some "")
+                    }
 
                 let nonBatched = Batch.Create(batched, 0, 50, 100)
 
@@ -201,10 +205,11 @@ let tests =
             <| async {
                 let mutable calledWith = []
 
-                let batched (args: int[]) = async {
-                    lock calledWith (fun () -> calledWith <- calledWith @ [ Array.sort args ])
-                    return args |> Array.map (fun a -> a, Some "")
-                }
+                let batched (args: int[]) =
+                    async {
+                        lock calledWith (fun () -> calledWith <- calledWith @ [ Array.sort args ])
+                        return args |> Array.map (fun a -> a, Some "")
+                    }
 
                 let nonBatched = Batch.Create(batched, 100, 500, 1000, maxSize = 5)
 
@@ -227,10 +232,11 @@ let tests =
             <| async {
                 let mutable calledWith = []
 
-                let batched (extra: string) (args: int[]) = async {
-                    lock calledWith (fun () -> calledWith <- calledWith @ [ extra, Array.sort args ])
-                    return args |> Array.map (fun a -> a, Some "")
-                }
+                let batched (extra: string) (args: int[]) =
+                    async {
+                        lock calledWith (fun () -> calledWith <- calledWith @ [ extra, Array.sort args ])
+                        return args |> Array.map (fun a -> a, Some "")
+                    }
 
                 let nonBatched = Batch.Create(batched, 50)
 

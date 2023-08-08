@@ -59,7 +59,8 @@ module private Batch =
                 batch.Items.Keys
                 |> Seq.groupBy (fun struct (extra, _) -> extra)
                 |> Seq.map (fun (extra, extraAndItems) ->
-                    extra, extraAndItems |> Seq.map (fun struct (_, item) -> item) |> Seq.toArray)
+                    extra, extraAndItems |> Seq.map (fun struct (_, item) -> item) |> Seq.toArray
+                )
 
             try
                 let! res =
@@ -112,13 +113,14 @@ module private Batch =
 
         /// Returns a non-batched function that returns a specified item in the batch
         let nonBatchedItemAwaiterFor batch : GetNonBatched<'extra, 'a, 'b> =
-            fun _extra x -> async {
-                let! res = batch.Result.Task |> Async.AwaitTask
+            fun _extra x ->
+                async {
+                    let! res = batch.Result.Task |> Async.AwaitTask
 
-                match res.TryGetValue x with
-                | false, _ -> return notFound
-                | true, x -> return x
-            }
+                    match res.TryGetValue x with
+                    | false, _ -> return notFound
+                    | true, x -> return x
+                }
 
         MailboxProcessor.Start(fun inbox ->
 
@@ -141,29 +143,31 @@ module private Batch =
 
                     batch
 
-            let rec loop (batch: Batch<'extra, 'a, 'b>) = async {
-                match! inbox.Receive() with
+            let rec loop (batch: Batch<'extra, 'a, 'b>) =
+                async {
+                    match! inbox.Receive() with
 
-                | Add(replyChannel, extra, item) ->
-                    batch |> addItem extra item
+                    | Add(replyChannel, extra, item) ->
+                        batch |> addItem extra item
 
-                    replyChannel.Reply(nonBatchedItemAwaiterFor batch)
+                        replyChannel.Reply(nonBatchedItemAwaiterFor batch)
 
-                    if batch.Items.Count >= batch.MaxSize then
-                        // Batch full, run immediately and create new batch
-                        run batch
-                        let newBatch = create getBatched waitMs minWaitAfterAddMs maxWaitMs maxSize
-                        return! loop newBatch
-                    elif batch.IsScheduled then
-                        // Already scheduled, we don't need to do anything here
-                        return! loop batch
-                    else
-                        return! runOrSchedule batch |> loop
+                        if batch.Items.Count >= batch.MaxSize then
+                            // Batch full, run immediately and create new batch
+                            run batch
+                            let newBatch = create getBatched waitMs minWaitAfterAddMs maxWaitMs maxSize
+                            return! loop newBatch
+                        elif batch.IsScheduled then
+                            // Already scheduled, we don't need to do anything here
+                            return! loop batch
+                        else
+                            return! runOrSchedule batch |> loop
 
-                | RunOrReschedule -> return! runOrSchedule batch |> loop
-            }
+                    | RunOrReschedule -> return! runOrSchedule batch |> loop
+                }
 
-            loop (create getBatched waitMs minWaitAfterAddMs maxWaitMs maxSize))
+            loop (create getBatched waitMs minWaitAfterAddMs maxWaitMs maxSize)
+        )
 
 
     let createBatched<'extra, 'a, 'b when 'a: equality and 'extra: equality>
@@ -177,10 +181,11 @@ module private Batch =
         let agent =
             createBatchAgent getBatched notFound initialWaitMs minWaitAfterAddMs maxWaitMs maxSize
 
-        fun extra x -> async {
-            let! nonBatched = agent.PostAndAsyncReply(fun replyChannel -> Add(replyChannel, extra, x))
-            return! nonBatched extra x
-        }
+        fun extra x ->
+            async {
+                let! nonBatched = agent.PostAndAsyncReply(fun replyChannel -> Add(replyChannel, extra, x))
+                return! nonBatched extra x
+            }
 
 
 [<AbstractClass; Sealed>]
@@ -259,10 +264,11 @@ type Batch private () =
     /// Returns a non-batched version of the batched function. The batch is executed waitMs
     /// after the first call, or immediately when maxSize is reached (if specified).
     static member Create(runBatched: 'a[] -> Async<unit>, waitMs, ?maxSize) : 'a -> Async<unit> =
-        let getBatched () args = async {
-            do! runBatched args
-            return args |> Array.map (fun x -> x, ())
-        }
+        let getBatched () args =
+            async {
+                do! runBatched args
+                return args |> Array.map (fun x -> x, ())
+            }
 
         createBatched getBatched () waitMs ValueNone waitMs (defaultArg maxSize Int32.MaxValue) ()
 
@@ -274,10 +280,11 @@ type Batch private () =
     /// and run as part of the same batch (regarding timing, max size, etc.), but the
     /// batched function is invoked once for each unique 'extra value.
     static member Create(runBatched: 'extra -> 'a[] -> Async<unit>, waitMs, ?maxSize) : 'extra -> 'a -> Async<unit> =
-        let getBatched extra args = async {
-            do! runBatched extra args
-            return args |> Array.map (fun x -> x, ())
-        }
+        let getBatched extra args =
+            async {
+                do! runBatched extra args
+                return args |> Array.map (fun x -> x, ())
+            }
 
         createBatched getBatched () waitMs ValueNone waitMs (defaultArg maxSize Int32.MaxValue)
 
@@ -293,10 +300,11 @@ type Batch private () =
             maxWaitMs,
             ?maxSize
         ) : 'a -> Async<unit> =
-        let getBatched () args = async {
-            do! runBatched args
-            return args |> Array.map (fun x -> x, ())
-        }
+        let getBatched () args =
+            async {
+                do! runBatched args
+                return args |> Array.map (fun x -> x, ())
+            }
 
         createBatched
             getBatched
@@ -324,10 +332,11 @@ type Batch private () =
             maxWaitMs,
             ?maxSize
         ) : 'extra -> 'a -> Async<unit> =
-        let getBatched extra args = async {
-            do! runBatched extra args
-            return args |> Array.map (fun x -> x, ())
-        }
+        let getBatched extra args =
+            async {
+                do! runBatched extra args
+                return args |> Array.map (fun x -> x, ())
+            }
 
         createBatched
             getBatched
