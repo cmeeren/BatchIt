@@ -29,7 +29,7 @@ module private Batch =
         MaxWaitMs: int
         MaxSize: int
         Items: IDictionary<struct ('extra * 'a), unit>
-        Result: TaskCompletionSource<IDictionary<'a, 'b>>
+        Result: TaskCompletionSource<IDictionary<struct ('extra * 'a), 'b>>
         mutable FirstAdd: DateTime
         mutable LastAdd: DateTime
         mutable IsScheduled: bool
@@ -61,14 +61,24 @@ module private Batch =
                 |> Seq.map (fun (extra, extraAndItems) ->
                     extra, extraAndItems |> Seq.map (fun struct (_, item) -> item) |> Seq.toArray
                 )
+                |> Array.ofSeq
+
+            // Clear captured items to release references before awaiting user code.
+            batch.Items.Clear()
 
             try
-                let! res =
+                let! resultsByExtra =
                     itemsByExtra
-                    |> Seq.map (fun (extra, items) -> batch.GetBatched extra items)
+                    |> Array.map (fun (extra, items) -> batch.GetBatched extra items)
                     |> Async.Parallel
 
-                res |> Array.collect id |> dict |> batch.Result.SetResult
+                (itemsByExtra, resultsByExtra)
+                ||> Array.zip
+                |> Array.collect (fun ((extra, _), results) ->
+                    results |> Array.map (fun (item, value) -> struct (extra, item), value)
+                )
+                |> dict
+                |> batch.Result.SetResult
             with ex ->
                 batch.Result.SetException ex
         }
@@ -82,7 +92,7 @@ module private Batch =
         MaxWaitMs = maxWaitMs
         MaxSize = maxSize
         Items = Dictionary()
-        Result = TaskCompletionSource()
+        Result = TaskCompletionSource<IDictionary<struct ('extra * 'a), 'b>>()
         FirstAdd = DateTime.MinValue
         LastAdd = DateTime.MinValue
         IsScheduled = false
@@ -113,11 +123,11 @@ module private Batch =
 
         /// Returns a non-batched function that returns a specified item in the batch
         let nonBatchedItemAwaiterFor batch : GetNonBatched<'extra, 'a, 'b> =
-            fun _extra x ->
+            fun extra x ->
                 async {
                     let! res = batch.Result.Task |> Async.AwaitTask
 
-                    match res.TryGetValue x with
+                    match res.TryGetValue(struct (extra, x)) with
                     | false, _ -> return notFound
                     | true, x -> return x
                 }

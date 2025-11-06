@@ -1,6 +1,10 @@
 Release notes
 =============
 
+### 1.2.1
+
+* Fixed batches with different `'extra` values overwriting each other's results for otherwise identical arguments
+
 ### 1.2.0
 
 * Added helper overloads for batched functions returning `Async<unit>`
