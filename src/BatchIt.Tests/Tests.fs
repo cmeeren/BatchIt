@@ -256,7 +256,10 @@ let tests =
                 let mutable calledWith = []
 
                 let getRetValue extra arg =
-                    if extra = "a" then Some (string<int> arg) else Some (string<int> -arg)
+                    if extra = "a" then
+                        Some(string<int> arg)
+                    else
+                        Some(string<int> -arg)
 
                 let batched (extra: string) (args: int[]) =
                     async {
@@ -278,7 +281,11 @@ let tests =
                     |> Async.Parallel
 
                 for (extra, arg), result in results do
-                    test <@ ignore extra; result = getRetValue extra arg @>
+                    test
+                        <@
+                            ignore extra
+                            result = getRetValue extra arg
+                        @>
 
                 let calledWith' = List.sort calledWith
                 test <@ calledWith' = [ "a", [| 1; 2; 3; 4; 5; 6; 7 |]; "other", [| 1 |] ] @>
