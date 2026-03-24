@@ -64,7 +64,7 @@ let getPersonBatched (args: FindArgs []) : Async<(FindArgs * Person option) []> 
 
 open BatchIt
 
-let getPerson : PersonArgs -> Async<Person option> =
+let getPerson : FindArgs -> Async<Person option> =
   Batch.Create(getPersonBatched, 50, 100, 1000)
 
 // Now any calls to the seemingly normal getPerson function will be batched.
@@ -128,7 +128,7 @@ let getPersonBatched
 
 open BatchIt
 
-let getPerson : string -> PersonArgs -> Async<Person option> =
+let getPerson : string -> FindArgs -> Async<Person option> =
   Batch.Create(getPersonBatched, 50, 100, 1000)
 ```
 
