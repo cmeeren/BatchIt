@@ -13,7 +13,7 @@
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageTags>f# fsharp batching batch-processing</PackageTags>
     <Version>1.2.1</Version>
-    <PackageReleaseNotes>https://github.com/cmeeren/BatchIt/blob/master/RELEASE_NOTES.md</PackageReleaseNotes>
+    <PackageReleaseNotes>https://github.com/cmeeren/BatchIt/blob/main/RELEASE_NOTES.md</PackageReleaseNotes>
   </PropertyGroup>
 
   <ItemGroup>

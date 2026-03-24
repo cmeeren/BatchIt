@@ -141,4 +141,4 @@ Contributing
 ------------
 
 Contributions and ideas are welcome! Please
-see [Contributing.md](https://github.com/cmeeren/BatchIt/blob/master/.github/CONTRIBUTING.md) for details.
+see [Contributing.md](https://github.com/cmeeren/BatchIt/blob/main/.github/CONTRIBUTING.md) for details.

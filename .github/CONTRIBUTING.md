@@ -35,24 +35,24 @@ steps:
 7. Push the branch up to GitHub: `git push origin myBranch`
 8. Send a Pull Request on GitHub
 
-You should **never** work on a clone of master, and you should **never** send a pull request from master - always from a
+You should **never** work on a clone of main, and you should **never** send a pull request from main - always from a
 branch. The reasons for this are detailed below.
 
-### Rebasing when handling updates from `upstream/master`
+### Rebasing when handling updates from `upstream/main`
 
-While you're working on your branch it's quite possible that your upstream master may be updated. If this happens you
+While you're working on your branch it's quite possible that your upstream main may be updated. If this happens you
 should:
 
 1. [Stash](https://git-scm.com/book/en/v2/Git-Tools-Stashing-and-Cleaning) any un-committed changes you need to
-2. `git checkout master`
-3. `git pull upstream master`
-4. `git rebase master myBranch`
-5. `git push origin master` (optional; this this makes sure your remote master is up to date)
+2. `git checkout main`
+3. `git pull upstream main`
+4. `git rebase main myBranch`
+5. `git push origin main` (optional; this this makes sure your remote main is up to date)
 
-This ensures that your history is “clean”, with one branch off from master containing your changes in a straight line.
+This ensures that your history is “clean”, with one branch off from main containing your changes in a straight line.
 Failing to do this ends up with several messy merges in your history, which we’d rather avoid in order to keep the
 project history understandable. This is the reason why you should always work in a branch and you should never be
-working in, or sending pull requests from, `master`.
+working in, or sending pull requests from, `main`.
 
 If you have pushed your branch to GitHub and you need to rebase like this (including after you have created a pull
 request), you need to use `git push -f` to force rewrite the remote branch.
@@ -69,7 +69,7 @@ For maintainers.
 * Make necessary changes to the code
 * Update `RELEASE_NOTES.md`
 * Update the version in the fsproj file
-* Commit and tag the commit (this is what triggers deployment from GitHub Actions). For consistency, the tag should be
-  identical to the version (e.g. `1.2.3`).
+* Commit and tag the commit (this is what triggers deployment from GitHub Actions). For consistency, the tag should use
+  the repo's current `v/...` format (e.g. `v/1.2.3`).
 * Push the changes and the tag to the repo. If the GitHub Actions build succeeds, the package is automatically published
   to NuGet.
