@@ -5,6 +5,7 @@
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
     <DebugType>Embedded</DebugType>
     <EmbedAllSources>True</EmbedAllSources>
     <Description>BatchIt is a very simple F# library that allows you to write batched async functions and consume them as if they were non-batched.</Description>
@@ -21,6 +22,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
     <PackageReference Update="FSharp.Core" Version="4.6.2" />
   </ItemGroup>
 
