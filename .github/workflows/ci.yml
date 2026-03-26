@@ -26,6 +26,7 @@ jobs:
         run: dotnet test -c Release -maxCpuCount -- Expecto.fail-on-focused-tests=true
 
       - name: NuGet login
+        if: startsWith(github.ref, 'refs/tags/v/')
         uses: NuGet/login@v1
         id: nuget_login
         with:
