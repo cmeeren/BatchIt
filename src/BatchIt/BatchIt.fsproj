@@ -7,7 +7,7 @@
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <DebugType>Embedded</DebugType>
     <EmbedAllSources>True</EmbedAllSources>
-    <Description>BatchIt lets you write F# async functions that handle many arguments at once, such as a database query for many IDs, and call them as if they handled one argument at a time.</Description>
+    <Description>BatchIt lets you write an F# async function that takes an array of arguments, such as a database query for many IDs at once, and call it with a single argument at a time.</Description>
     <PackageProjectUrl>https://github.com/cmeeren/BatchIt</PackageProjectUrl>
     <Authors>Christer van der Meeren</Authors>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

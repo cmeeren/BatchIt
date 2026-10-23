@@ -1,9 +1,9 @@
 BatchIt
 =======
 
-BatchIt is a small F# library that lets you write a function that handles many arguments at once, such as a database
-query for many IDs, and call it as if it handled one argument at a time. Calls made at about the same time, from
-anywhere in your app, are collected into batches, and each batch runs your function once with the distinct arguments.
+BatchIt is a small F# library that lets you write a function that takes an array of arguments, such as a database query
+for many IDs at once, and call it with a single argument at a time. Calls made at about the same time, from anywhere in
+your app, are collected into batches, and each batch runs your function once with the distinct arguments.
 
 This helps when many independent pieces of code each need one item, for example GraphQL resolvers, JSON:API
 relationships (e.g. with [Felicity](https://github.com/cmeeren/Felicity)), or many concurrent requests that each look up
