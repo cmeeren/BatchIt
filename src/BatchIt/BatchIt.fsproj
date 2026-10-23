@@ -23,6 +23,7 @@
 
   <ItemGroup>
     <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\.agents\skills\batchit\SKILL.md" Pack="true" PackagePath="skills/SKILL.md" Visible="false" />
     <PackageReference Update="FSharp.Core" Version="4.6.2" />
   </ItemGroup>
 

@@ -155,6 +155,25 @@ ambient values (e.g. `Activity.Current` is `null` and the culture is the thread 
 SQL dependencies) is not correlated with any of the requests it serves. Callers continue in their own execution context
 and, if they have one, their `SynchronizationContext`.
 
+Agent skill
+-----------
+
+The [BatchIt skill](https://github.com/cmeeren/BatchIt/tree/main/.agents/skills/batchit) helps coding agents use
+BatchIt correctly.
+
+To install it, copy the `.agents/skills/batchit` folder from this repository into your project's skill directory (for
+Codex, `.agents/skills/batchit`), or ask your agent's skill installer to install that folder. Install only `batchit`;
+`release-batchit` is for maintainers of this library.
+
+The skill is available starting with BatchIt 2.0. Use the Git tag matching your package version (`v/<version>`), or
+`main` for development builds. Review and commit the installed skill with your project, and update it when upgrading
+BatchIt. Installation is optional and explicit; the NuGet package does not install agent instructions during builds.
+
+The same skill is bundled as `skills/SKILL.md` in the NuGet package. Agents and package-aware tools can read it from
+`<global-packages-folder>/batchit/<version>/skills/SKILL.md` after restore. Run `dotnet nuget locals global-packages
+--list` to locate that folder. This copy matches the installed package version; bundling it does not automatically make
+it discoverable by your agent.
+
 Contributing
 ------------
 
