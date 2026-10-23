@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release BatchIt"
+  short_description: "Prepare BatchIt NuGet and GitHub releases."
+  default_prompt: "Use $release-batchit to prepare or publish a BatchIt release."

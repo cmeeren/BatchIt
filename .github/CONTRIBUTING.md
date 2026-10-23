@@ -66,10 +66,9 @@ in [this guide](https://robots.thoughtbot.com/git-interactive-rebase-squash-amen
 
 For maintainers.
 
-* Make necessary changes to the code
-* Update `RELEASE_NOTES.md`
-* Update the version in the fsproj file
-* Commit and tag the commit (this is what triggers deployment from GitHub Actions). For consistency, the tag should use
-  the repo's current `v/...` format (e.g. `v/1.2.3`).
-* Push the changes and the tag to the repo. If the GitHub Actions build succeeds, the package is automatically published
-  to NuGet.
+Follow the [release-batchit skill](../.agents/skills/release-batchit/SKILL.md) for the full release workflow.
+
+* Update `Version` in `src/BatchIt/BatchIt.fsproj` and finalize the version/date heading in `RELEASE_NOTES.md`.
+* Check formatting, run the Release tests, and inspect the packed NuGet package.
+* Commit and tag the commit as `v/x.y.z`, then push the commit and tag. Successful tag CI publishes to NuGet.
+* Confirm the exact version is available on NuGet, then create the GitHub Release using the tagged release notes.

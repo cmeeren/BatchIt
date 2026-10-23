@@ -14,6 +14,8 @@ Installation
 
 Install the [BatchIt](https://www.nuget.org/packages/BatchIt) package from NuGet.
 
+Upgrading from 1.x? See the [release notes](https://github.com/cmeeren/BatchIt/blob/main/RELEASE_NOTES.md#upgrading-from-1x).
+
 Quick start
 -----------
 

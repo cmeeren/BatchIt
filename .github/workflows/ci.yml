@@ -3,18 +3,20 @@ name: CI
 on: [ push, pull_request ]
 
 permissions:
-  id-token: write
+  contents: read
 
 jobs:
-  ci:
+  lint:
 
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v3
+        uses: actions/setup-dotnet@v5.2.0
 
       - name: Restore tools
         run: dotnet tool restore
@@ -22,18 +24,59 @@ jobs:
       - name: Check code format
         run: dotnet fantomas --check .
 
+      - name: Test release helper
+        run: node --test .agents/skills/release-batchit/scripts/wait-for-nuget.test.js
+
+      - name: Pack
+        run: dotnet pack -c Release src/BatchIt/BatchIt.fsproj --output artifacts/packages
+
+
+  test:
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5.2.0
+
       - name: Test
         run: dotnet test -c Release
 
+
+  publish:
+
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v/')
+    permissions:
+      contents: read
+      id-token: write
+
+    needs:
+      - lint
+      - test
+
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5.2.0
+
+      - name: Pack
+        run: dotnet pack -c Release src/BatchIt/BatchIt.fsproj --output artifacts/packages
+
       - name: NuGet login
-        if: startsWith(github.ref, 'refs/tags/v/')
-        uses: NuGet/login@v1
+        uses: NuGet/login@v1.2.0
         id: nuget_login
         with:
           user: ${{ secrets.NUGET_USER }}
 
       - name: Push
-        if: startsWith(github.ref, 'refs/tags/v/')
         env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
-        run: dotnet nuget push "**/*.nupkg" -s "https://api.nuget.org/v3/index.json" -k ${{ steps.nuget_login.outputs.NUGET_API_KEY }} --skip-duplicate
+          NUGET_API_KEY: ${{ steps.nuget_login.outputs.NUGET_API_KEY }}
+        run: dotnet nuget push artifacts/packages/*.nupkg -s "https://api.nuget.org/v3/index.json" -k "$NUGET_API_KEY" --skip-duplicate
