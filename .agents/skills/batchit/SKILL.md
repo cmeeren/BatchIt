@@ -16,7 +16,7 @@ This skill describes BatchIt 2.x. Use guidance matching the project's package ve
 - The overload follows from the result type: `option`, `voption`, `list`, and array results give `None`, `ValueNone`, `[]`, and `[||]` for missing arguments; functions returning `Async<unit>` need no results; other result types need an explicit `notFound` value.
 - `Batch.Create` throws `ArgumentException` for negative waits, `maxWaitMs` below `minWaitMs`, or `maxSize` below 1.
 
-## Writing the batched function
+## Writing the batched function (the one you pass to `Batch.Create`)
 
 - It receives each distinct argument once, in the order first called, and returns `(argument, result)` pairs. Arguments are deduplicated and matched with results using F# structural equality, so return each argument as received or an equal value. Arguments without a result get the not-found value; for an argument returned more than once, the last result is used.
 - Use the `'extra` overloads for values that are passed through rather than batched, such as a connection string. Calls with different `'extra` values share a batch's timing and `maxSize`, but the batched function runs once per distinct `'extra` value (compared with F# equality), and a failure or slow run for one value doesn't affect callers with other values. Per-request values such as an `HttpContext` or a logger usually compare by reference, so as `'extra` values they prevent batching across requests.
