@@ -31,6 +31,28 @@ type private RecordedSpans() =
         member _.Dispose() = listener.Dispose()
 
 
+/// Listens to BatchIt's spans like a parent-based sampler whose root sampler drops everything: it records only spans
+/// with a recorded parent.
+type private ParentBasedListener() =
+
+    let listener =
+        new ActivityListener(
+            ShouldListenTo = Func<ActivitySource, bool>(fun source -> source.Name = "BatchIt"),
+            Sample =
+                SampleActivity<ActivityContext>(fun options ->
+                    if options.Parent.TraceFlags.HasFlag ActivityTraceFlags.Recorded then
+                        ActivitySamplingResult.AllDataAndRecorded
+                    else
+                        ActivitySamplingResult.None
+                )
+        )
+
+    do ActivitySource.AddActivityListener listener
+
+    interface IDisposable with
+        member _.Dispose() = listener.Dispose()
+
+
 /// Starts the computations as a separate caller (see startAsCaller) with its own current activity, and returns the
 /// activity's context and the calls.
 let private startWithActivity name (computations: Async<'a> list) =
@@ -103,7 +125,7 @@ type private NameInConstructor() =
 
 
 [<Fact>]
-let ``Each batched-function run is a root span linked to the activities of the calls it serves`` () =
+let ``A run's span has the batch's tags, is current in the batched function, and links to its calls' traces`` () =
     task {
         use spans = new RecordedSpans()
         let currentInBatch = ConcurrentQueue<Activity>()
@@ -163,34 +185,133 @@ let ``Each extra value's run gets its own span`` () =
     }
 
 
+/// Starts a call as a separate caller (see startAsCaller) whose current activity is a child of the request activity,
+/// like a resolver of a GraphQL request, and returns that activity's context and the call.
+let private startCallInRequest (request: Activity) name computation =
+    inContext
+        name
+        (fun () ->
+            let child =
+                (new Activity(name)).SetParentId(request.TraceId, request.SpanId).Start()
+
+            child.Context, start computation
+        )
+
+
+let private startRequest name =
+    inContext name (fun () -> (new Activity(name)).Start())
+
+
 [<Fact>]
-let ``Spans link to one activity per trace`` () =
+let ``Spans of runs whose calls all come from one trace are children of the first call's activity`` () =
     task {
         use spans = new RecordedSpans()
         let nonBatched = Batch.Create(getThingsBatched, 200)
-        let request = inContext "request" (fun () -> (new Activity("request")).Start())
+        let request = startRequest "request"
 
-        // Like two resolvers of one request
-        let startChildCall name item =
-            inContext
-                name
-                (fun () ->
-                    let child =
-                        (new Activity(name)).SetParentId(request.TraceId, request.SpanId).Start()
-
-                    child.Context, start (nonBatched item)
-                )
-
-        let firstContext, firstCall = startChildCall "first" 1
-        let _, secondCall = startChildCall "second" 2
+        let firstContext, firstCall = startCallInRequest request "first" (nonBatched 1)
+        let _, secondCall = startCallInRequest request "second" (nonBatched 2)
         let! _ = result firstCall
         let! _ = result secondCall
 
         let span = spans.Spans.Should().ContainExactlyOneItem().Whose
+        %span.TraceId.Should().Be(request.TraceId)
+        %span.ParentSpanId.Should().Be(firstContext.SpanId)
+        %span.Links.Should().BeEmpty()
+    }
+
+
+[<Fact>]
+let ``Spans of runs whose calls come from several traces link to one activity per trace`` () =
+    task {
+        use spans = new RecordedSpans()
+        let nonBatched = Batch.Create(getThingsBatched, 200)
+        let request = startRequest "request"
+        let otherRequest = startRequest "other request"
+
+        let firstContext, firstCall = startCallInRequest request "first" (nonBatched 1)
+        let _, secondCall = startCallInRequest request "second" (nonBatched 2)
+        let otherContext, otherCall = startCallInRequest otherRequest "other" (nonBatched 3)
+
+        for call in [ firstCall; secondCall; otherCall ] do
+            let! _ = result call
+            ()
+
+        let span = spans.Spans.Should().ContainExactlyOneItem().Whose
+        %span.ParentSpanId.Should().Be(Unchecked.defaultof<ActivitySpanId>)
 
         %(span.Links |> Seq.map (fun link -> link.Context) |> List.ofSeq)
             .Should()
-            .Be([ firstContext ])
+            .HaveSameItemsAs([ firstContext; otherContext ])
+    }
+
+
+[<Fact>]
+let ``Spans of runs that also serve calls without an activity start their own trace`` () =
+    task {
+        use spans = new RecordedSpans()
+        let nonBatched = Batch.Create(getThingsBatched, 200)
+        let request = startRequest "request"
+
+        let callerContext, call = startCallInRequest request "caller" (nonBatched 1)
+        let callWithoutActivity = start (nonBatched 2)
+        let! _ = result call
+        let! _ = result callWithoutActivity
+
+        let span = spans.Spans.Should().ContainExactlyOneItem().Whose
+        %span.ParentSpanId.Should().Be(Unchecked.defaultof<ActivitySpanId>)
+        %span.TraceId.Should().NotBe(request.TraceId)
+
+        %(span.Links |> Seq.map (fun link -> link.Context) |> List.ofSeq)
+            .Should()
+            .Be([ callerContext ])
+    }
+
+
+[<Fact>]
+let ``If the calls' trace isn't sampled, the batched function's telemetry stays in it, unrecorded`` () =
+    task {
+        use _ = new ParentBasedListener()
+        let currentInBatch = ConcurrentQueue<Activity>()
+
+        let batched (items: int[]) =
+            async {
+                currentInBatch.Enqueue Activity.Current
+                return items |> Array.map (fun item -> item, Some item)
+            }
+
+        // An activity started without a sampler isn't recorded.
+        let callerContext, calls =
+            startWithActivity "request" [ Batch.Create (batched, 0) 1 ]
+
+        let! _ = result calls.Head
+
+        let current = currentInBatch.Should().ContainExactlyOneItem().Whose
+        %current.Should().NotBeNull()
+        %current.TraceId.Should().Be(callerContext.TraceId)
+        %current.ParentSpanId.Should().Be(callerContext.SpanId)
+        %current.Recorded.Should().BeFalse()
+    }
+
+
+[<Fact>]
+let ``If a run's own trace isn't sampled, the batched function's telemetry belongs to it, unrecorded`` () =
+    task {
+        use _ = new ParentBasedListener()
+        let currentInBatch = ConcurrentQueue<Activity>()
+
+        let batched (items: int[]) =
+            async {
+                currentInBatch.Enqueue Activity.Current
+                return items |> Array.map (fun item -> item, Some item)
+            }
+
+        let! _ = start (Batch.Create (batched, 0) 1) |> result
+
+        let current = currentInBatch.Should().ContainExactlyOneItem().Whose
+        %current.Should().NotBeNull()
+        %current.ParentSpanId.Should().Be(Unchecked.defaultof<ActivitySpanId>)
+        %current.Recorded.Should().BeFalse()
     }
 
 

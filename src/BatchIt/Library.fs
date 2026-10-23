@@ -87,6 +87,8 @@ type internal BatchGroup<'extra, 'a, 'b> = {
     ItemKeys: HashSet<Key<'a>>
     /// The number of calls, including those with repeated items.
     mutable CallCount: int
+    /// The number of calls that had a current activity while BatchIt's spans were being listened to.
+    mutable TracedCallCount: int
     /// The current activity of the first call from each trace, recorded while BatchIt's spans are being listened to.
     CallerActivities: Dictionary<ActivityTraceId, ActivityContext>
     Results: TaskCompletionSource<Dictionary<Key<'a>, 'b>>
@@ -191,18 +193,22 @@ module internal BatchTracing =
     /// Records the caller's activity for the group's span, unless one from the same trace is recorded already.
     let addCallerActivity (group: BatchGroup<'extra, 'a, 'b>) (callerActivity: ActivityContext voption) =
         match callerActivity with
-        | ValueSome context when
-            group.CallerActivities.Count < maxLinks
-            && not (group.CallerActivities.ContainsKey context.TraceId)
-            ->
-            group.CallerActivities[context.TraceId] <- context
-        | _ -> ()
+        | ValueSome context ->
+            group.TracedCallCount <- group.TracedCallCount + 1
+
+            if
+                group.CallerActivities.Count < maxLinks
+                && not (group.CallerActivities.ContainsKey context.TraceId)
+            then
+                group.CallerActivities[context.TraceId] <- context
+        | ValueNone -> ()
 
     // Tracing must never fail callers, so exceptions from listeners below are ignored.
 
-    /// Starts the span for a run of a batched function, linked to the activities of the calls it serves, or returns
-    /// null if nothing records it. The span becomes the current activity; call this with no current activity, so that
-    /// the span is the root of its own trace.
+    /// Starts the span for a run of a batched function and makes it the current activity, or returns null if nothing
+    /// listens to BatchIt's spans. If all the calls it serves come from one trace, such as a single request, the span
+    /// is a child of the first call's activity. Otherwise, it starts its own trace and links to the activities of the
+    /// calls; call this with no current activity for that.
     let startRun (name: string) (group: BatchGroup<'extra, 'a, 'b>) : Activity =
         if source.HasListeners() then
             try
@@ -211,12 +217,46 @@ module internal BatchTracing =
                     KeyValuePair<string, obj>("batchit.batch.call_count", box group.CallCount)
                 |]
 
-                let links =
-                    group.CallerActivities.Values
-                    |> Seq.map (fun context -> ActivityLink(context))
-                    |> Seq.toArray
+                let parent =
+                    if group.CallerActivities.Count = 1 && group.TracedCallCount = group.CallCount then
+                        ValueSome(Seq.head group.CallerActivities.Values)
+                    else
+                        ValueNone
 
-                source.StartActivity(name, ActivityKind.Internal, Unchecked.defaultof<ActivityContext>, tags, links)
+                let span =
+                    match parent with
+                    | ValueSome parent -> source.StartActivity(name, ActivityKind.Internal, parent, tags)
+                    | ValueNone ->
+                        let links =
+                            group.CallerActivities.Values
+                            |> Seq.map (fun context -> ActivityLink(context))
+                            |> Seq.toArray
+
+                        source.StartActivity(
+                            name,
+                            ActivityKind.Internal,
+                            Unchecked.defaultof<ActivityContext>,
+                            tags,
+                            links
+                        )
+
+                match span with
+                | null ->
+                    // A sampler didn't record the span, as when the request's trace isn't sampled. An unrecorded
+                    // placeholder in the same trace keeps the batched function's own telemetry, such as SQL calls,
+                    // from starting traces of their own, so samplers treat it like the span.
+                    let placeholder = new Activity(name)
+
+                    match parent with
+                    | ValueSome parent ->
+                        placeholder.SetParentId(parent.TraceId, parent.SpanId, parent.TraceFlags)
+                        |> ignore
+
+                        placeholder.TraceStateString <- parent.TraceState
+                    | ValueNone -> ()
+
+                    placeholder.Start()
+                | span -> span
             with _ ->
                 // The activity may be current even if a listener threw.
                 Activity.Current <- null
@@ -264,8 +304,8 @@ type internal Batcher<'extra, 'a, 'b when 'extra: equality and 'a: equality>
             |> min (batch.FirstAdd + maxWait)
 
     let runGroup (group: BatchGroup<'extra, 'a, 'b>) =
-        // Each run's span starts its own trace rather than joining whichever activity this thread has, and stays
-        // current only for the batched function.
+        // Each run's span takes its parent from its calls rather than from whichever activity this thread has, and
+        // stays current only for the batched function.
         let previousActivity = Activity.Current
         Activity.Current <- null
 
@@ -369,6 +409,7 @@ type internal Batcher<'extra, 'a, 'b when 'extra: equality and 'a: equality>
                                 Items = ResizeArray()
                                 ItemKeys = HashSet()
                                 CallCount = 0
+                                TracedCallCount = 0
                                 CallerActivities = Dictionary()
                                 Results = TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
                             }
