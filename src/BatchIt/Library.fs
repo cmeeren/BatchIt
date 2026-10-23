@@ -85,6 +85,10 @@ type internal BatchGroup<'extra, 'a, 'b> = {
     Extra: 'extra
     Items: ResizeArray<'a>
     ItemKeys: HashSet<Key<'a>>
+    /// The number of calls, including those with repeated items.
+    mutable CallCount: int
+    /// The current activity of the first call from each trace, recorded while BatchIt's spans are being listened to.
+    CallerActivities: Dictionary<ActivityTraceId, ActivityContext>
     Results: TaskCompletionSource<Dictionary<Key<'a>, 'b>>
 }
 
@@ -131,6 +135,110 @@ module internal TaskHelpers =
         }
 
 
+/// Traces each run of a batched function as a span (activity) from the "BatchIt" activity source.
+module internal BatchTracing =
+
+    [<Literal>]
+    let SourceName = "BatchIt"
+
+    let source =
+        new ActivitySource(SourceName, Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString())
+
+    let defaultName = "BatchIt.Batch"
+
+    /// The most links a span gets. Requests can have many activities, such as one per GraphQL resolver, so spans link
+    /// to one activity per trace, and exporters may keep only some links (the OpenTelemetry SDK's default limit is 128).
+    let maxLinks = 128
+
+    /// Returns the span name for a batcher whose function has the given type name: the F# binding that created the
+    /// function. F# compiles a function value to a closure class named after that binding, such as
+    /// `MyApp.Db+getPerson@12` for `let getPerson = Batch.Create(getPeopleBatched, ...)` in the module `MyApp.Db`.
+    let nameOfType (fullTypeName: string) =
+        match fullTypeName with
+        | null -> defaultName
+        // For example functions that FuncConvert creates for C# callers
+        | name when name.StartsWith("Microsoft.FSharp.", StringComparison.Ordinal) -> defaultName
+        // Closures created in classes declared in namespaces belong to compiler-generated types like <StartupCode$...>.
+        | name when name.StartsWith("<", StringComparison.Ordinal) -> defaultName
+        | name ->
+            let parts =
+                name.Split('@').[0].Split('+')
+                // Closures created in constructors are named -ctor or -cctor, and closures created in a pipeline after a
+                // compiler-generated binding like "Pipe #1 input at line 12".
+                |> Array.filter (fun part ->
+                    part.Length > 0
+                    && not (part.StartsWith("-", StringComparison.Ordinal))
+                    && not (part.StartsWith("Pipe #", StringComparison.Ordinal))
+                )
+
+            if parts.Length = 0 then
+                defaultName
+            else
+                String.Join(".", parts)
+
+    /// Returns the span name for a batcher created from the function f (see nameOfType).
+    let nameOf (f: obj) = nameOfType (f.GetType().FullName)
+
+    /// Returns the context of the current activity if BatchIt's spans are being listened to.
+    let currentCallerActivity () =
+        if source.HasListeners() then
+            match Activity.Current with
+            | null -> ValueNone
+            | activity -> ValueSome activity.Context
+        else
+            ValueNone
+
+    /// Records the caller's activity for the group's span, unless one from the same trace is recorded already.
+    let addCallerActivity (group: BatchGroup<'extra, 'a, 'b>) (callerActivity: ActivityContext voption) =
+        match callerActivity with
+        | ValueSome context when
+            group.CallerActivities.Count < maxLinks
+            && not (group.CallerActivities.ContainsKey context.TraceId)
+            ->
+            group.CallerActivities[context.TraceId] <- context
+        | _ -> ()
+
+    // Tracing must never fail callers, so exceptions from listeners below are ignored.
+
+    /// Starts the span for a run of a batched function, linked to the activities of the calls it serves, or returns
+    /// null if nothing records it. The span becomes the current activity; call this with no current activity, so that
+    /// the span is the root of its own trace.
+    let startRun (name: string) (group: BatchGroup<'extra, 'a, 'b>) : Activity =
+        if source.HasListeners() then
+            try
+                let tags = [|
+                    KeyValuePair<string, obj>("batchit.batch.size", box group.Items.Count)
+                    KeyValuePair<string, obj>("batchit.batch.call_count", box group.CallCount)
+                |]
+
+                let links =
+                    group.CallerActivities.Values
+                    |> Seq.map (fun context -> ActivityLink(context))
+                    |> Seq.toArray
+
+                source.StartActivity(name, ActivityKind.Internal, Unchecked.defaultof<ActivityContext>, tags, links)
+            with _ ->
+                // The activity may be current even if a listener threw.
+                Activity.Current <- null
+                null
+        else
+            null
+
+    /// Ends the span, marking it as failed if error is not null.
+    let stopRun (activity: Activity) (error: exn) =
+        if not (isNull activity) then
+            try
+                if not (isNull error) then
+                    activity
+                        .SetStatus(ActivityStatusCode.Error, error.Message)
+                        .SetTag("error.type", error.GetType().FullName)
+                    |> ignore
+
+                activity.Dispose()
+            with _ ->
+                ()
+
+
 /// Collects calls into batches and runs the batched function for them.
 [<Sealed>]
 type internal Batcher<'extra, 'a, 'b when 'extra: equality and 'a: equality>
@@ -139,9 +247,11 @@ type internal Batcher<'extra, 'a, 'b when 'extra: equality and 'a: equality>
         getBatched: 'extra -> 'a[] -> Async<('a * 'b)[]>,
         notFound: 'b,
         timing: BatchTiming,
-        maxSize: int
+        maxSize: int,
+        ?name: string
     ) =
 
+    let name = defaultArg name BatchTracing.defaultName
     let sync = obj ()
     let mutable pending: PendingBatch<'extra, 'a, 'b> voption = ValueNone
     let mutable timer = Unchecked.defaultof<IBatchTimer>
@@ -154,27 +264,46 @@ type internal Batcher<'extra, 'a, 'b when 'extra: equality and 'a: equality>
             |> min (batch.FirstAdd + maxWait)
 
     let runGroup (group: BatchGroup<'extra, 'a, 'b>) =
-        let setResults (results: ('a * 'b)[]) =
-            try
-                let resultsByItem = Dictionary(results.Length)
-
-                for item, value in results do
-                    resultsByItem[Key item] <- value
-
-                group.Results.TrySetResult resultsByItem |> ignore
-            with ex ->
-                group.Results.TrySetException ex |> ignore
+        // Each run's span starts its own trace rather than joining whichever activity this thread has, and stays
+        // current only for the batched function.
+        let previousActivity = Activity.Current
+        Activity.Current <- null
 
         try
-            Async.StartWithContinuations(
-                getBatched group.Extra (group.Items.ToArray()),
-                setResults,
-                (fun ex -> group.Results.TrySetException ex |> ignore),
-                (fun _ -> group.Results.TrySetCanceled() |> ignore),
-                CancellationToken.None
-            )
-        with ex ->
-            group.Results.TrySetException ex |> ignore
+            let activity = BatchTracing.startRun name group
+
+            let setError (ex: exn) =
+                BatchTracing.stopRun activity ex
+                group.Results.TrySetException ex |> ignore
+
+            let setResults (results: ('a * 'b)[]) =
+                try
+                    let resultsByItem = Dictionary(results.Length)
+
+                    for item, value in results do
+                        resultsByItem[Key item] <- value
+
+                    BatchTracing.stopRun activity null
+                    group.Results.TrySetResult resultsByItem |> ignore
+                with ex ->
+                    setError ex
+
+            let setCanceled _ =
+                BatchTracing.stopRun activity null
+                group.Results.TrySetCanceled() |> ignore
+
+            try
+                Async.StartWithContinuations(
+                    getBatched group.Extra (group.Items.ToArray()),
+                    setResults,
+                    setError,
+                    setCanceled,
+                    CancellationToken.None
+                )
+            with ex ->
+                setError ex
+        finally
+            Activity.Current <- previousActivity
 
     let run (batch: PendingBatch<'extra, 'a, 'b>) =
         for group in batch.Groups.Values do
@@ -210,7 +339,7 @@ type internal Batcher<'extra, 'a, 'b when 'extra: equality and 'a: equality>
     do timer <- env.CreateTimer onTimer
 
     /// Adds the item to the pending batch, starting a new batch if needed, and returns the results for its group.
-    let add (extra: 'extra) (item: 'a) =
+    let add (extra: 'extra) (item: 'a) (callerActivity: ActivityContext voption) =
         let struct (results, fullOrDueBatch) =
             lock
                 sync
@@ -239,6 +368,8 @@ type internal Batcher<'extra, 'a, 'b when 'extra: equality and 'a: equality>
                                 Extra = extra
                                 Items = ResizeArray()
                                 ItemKeys = HashSet()
+                                CallCount = 0
+                                CallerActivities = Dictionary()
                                 Results = TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
                             }
 
@@ -248,6 +379,9 @@ type internal Batcher<'extra, 'a, 'b when 'extra: equality and 'a: equality>
                     if group.ItemKeys.Add(Key item) then
                         group.Items.Add item
                         batch.ItemCount <- batch.ItemCount + 1
+
+                    group.CallCount <- group.CallCount + 1
+                    BatchTracing.addCallerActivity group callerActivity
 
                     batch.LastAdd <- now
                     let due = dueTime batch
@@ -272,7 +406,8 @@ type internal Batcher<'extra, 'a, 'b when 'extra: equality and 'a: equality>
     /// Returns the result for the item from the batch it's added to.
     member _.Get (extra: 'extra) (item: 'a) : Async<'b> =
         async {
-            let! resultsByItem = add extra item |> awaitTask
+            let callerActivity = BatchTracing.currentCallerActivity ()
+            let! resultsByItem = add extra item callerActivity |> awaitTask
 
             match resultsByItem.TryGetValue(Key item) with
             | true, value -> return value
@@ -290,17 +425,21 @@ module private Create =
         if maxSize < 1 then
             invalidArg "maxSize" "Must be at least 1."
 
-    let private createBatched getBatched notFound timing maxSize : 'extra -> 'a -> Async<'b> =
-        Batcher(SystemBatchEnvironment(), getBatched, notFound, timing, maxSize).Get
+    let private createBatched name getBatched notFound timing maxSize : 'extra -> 'a -> Async<'b> =
+        Batcher(SystemBatchEnvironment(), getBatched, notFound, timing, maxSize, name)
+            .Get
 
-    let createThrottledWithExtra getBatched notFound waitMs maxSize =
+    // The functions below take the user's own function as source, so that span names come from it rather than from
+    // the wrappers created here.
+
+    let private throttled source getBatched notFound waitMs maxSize =
         if waitMs < 0 then
             invalidArg "waitMs" "Must be non-negative."
 
         validateMaxSize maxSize
-        createBatched getBatched notFound (Throttle(fromMs waitMs)) maxSize
+        createBatched (BatchTracing.nameOf (box source)) getBatched notFound (Throttle(fromMs waitMs)) maxSize
 
-    let createDebouncedWithExtra getBatched notFound minWaitAfterAddMs minWaitMs maxWaitMs maxSize =
+    let private debounced source getBatched notFound minWaitAfterAddMs minWaitMs maxWaitMs maxSize =
         if minWaitAfterAddMs < 0 then
             invalidArg "minWaitAfterAddMs" "Must be non-negative."
 
@@ -313,13 +452,26 @@ module private Create =
         validateMaxSize maxSize
 
         createBatched
+            (BatchTracing.nameOf (box source))
             getBatched
             notFound
             (Debounce(fromMs minWaitAfterAddMs, fromMs minWaitMs, fromMs maxWaitMs))
             maxSize
 
+    let private withUnitResults (runBatched: 'extra -> 'a[] -> Async<unit>) extra items =
+        async {
+            do! runBatched extra items
+            return items |> Array.map (fun item -> item, ())
+        }
+
+    let createThrottledWithExtra getBatched notFound waitMs maxSize =
+        throttled getBatched getBatched notFound waitMs maxSize
+
+    let createDebouncedWithExtra getBatched notFound minWaitAfterAddMs minWaitMs maxWaitMs maxSize =
+        debounced getBatched getBatched notFound minWaitAfterAddMs minWaitMs maxWaitMs maxSize
+
     let createThrottled (getBatched: 'a[] -> Async<('a * 'b)[]>) notFound waitMs maxSize : 'a -> Async<'b> =
-        createThrottledWithExtra (fun () -> getBatched) notFound waitMs maxSize ()
+        throttled getBatched (fun () -> getBatched) notFound waitMs maxSize ()
 
     let createDebounced
         (getBatched: 'a[] -> Async<('a * 'b)[]>)
@@ -329,7 +481,33 @@ module private Create =
         maxWaitMs
         maxSize
         : 'a -> Async<'b> =
-        createDebouncedWithExtra (fun () -> getBatched) notFound minWaitAfterAddMs minWaitMs maxWaitMs maxSize ()
+        debounced getBatched (fun () -> getBatched) notFound minWaitAfterAddMs minWaitMs maxWaitMs maxSize ()
+
+    let createThrottledUnitWithExtra (runBatched: 'extra -> 'a[] -> Async<unit>) waitMs maxSize =
+        throttled runBatched (withUnitResults runBatched) () waitMs maxSize
+
+    let createDebouncedUnitWithExtra
+        (runBatched: 'extra -> 'a[] -> Async<unit>)
+        minWaitAfterAddMs
+        minWaitMs
+        maxWaitMs
+        maxSize
+        =
+        debounced runBatched (withUnitResults runBatched) () minWaitAfterAddMs minWaitMs maxWaitMs maxSize
+
+    let createThrottledUnit (runBatched: 'a[] -> Async<unit>) waitMs maxSize : 'a -> Async<unit> =
+        throttled runBatched (withUnitResults (fun () -> runBatched)) () waitMs maxSize ()
+
+    let createDebouncedUnit (runBatched: 'a[] -> Async<unit>) minWaitAfterAddMs minWaitMs maxWaitMs maxSize =
+        debounced
+            runBatched
+            (withUnitResults (fun () -> runBatched))
+            ()
+            minWaitAfterAddMs
+            minWaitMs
+            maxWaitMs
+            maxSize
+            ()
 
 
 [<AbstractClass; Sealed>]
@@ -401,13 +579,7 @@ type Batch private () =
     /// Returns a non-batched version of the batched function. The batch is executed waitMs
     /// after the first call, or immediately when maxSize is reached (if specified).
     static member Create(runBatched: 'a[] -> Async<unit>, waitMs, ?maxSize) : 'a -> Async<unit> =
-        let getBatched args =
-            async {
-                do! runBatched args
-                return args |> Array.map (fun x -> x, ())
-            }
-
-        createThrottled getBatched () waitMs (defaultArg maxSize Int32.MaxValue)
+        createThrottledUnit runBatched waitMs (defaultArg maxSize Int32.MaxValue)
 
     /// Returns a non-batched version of the batched function. The batch is executed waitMs
     /// after the first call, or immediately when maxSize is reached (if specified).
@@ -417,13 +589,7 @@ type Batch private () =
     /// and run as part of the same batch (regarding timing, max size, etc.), but the
     /// batched function is invoked once for each unique 'extra value.
     static member Create(runBatched: 'extra -> 'a[] -> Async<unit>, waitMs, ?maxSize) : 'extra -> 'a -> Async<unit> =
-        let getBatched extra args =
-            async {
-                do! runBatched extra args
-                return args |> Array.map (fun x -> x, ())
-            }
-
-        createThrottledWithExtra getBatched () waitMs (defaultArg maxSize Int32.MaxValue)
+        createThrottledUnitWithExtra runBatched waitMs (defaultArg maxSize Int32.MaxValue)
 
     /// Returns a non-batched version of the batched function. For each call, the batch
     /// execution is pushed forward to minWaitAfterAddMs after the call, but the batch waits
@@ -437,13 +603,7 @@ type Batch private () =
             maxWaitMs,
             ?maxSize
         ) : 'a -> Async<unit> =
-        let getBatched args =
-            async {
-                do! runBatched args
-                return args |> Array.map (fun x -> x, ())
-            }
-
-        createDebounced getBatched () minWaitAfterAddMs minWaitMs maxWaitMs (defaultArg maxSize Int32.MaxValue)
+        createDebouncedUnit runBatched minWaitAfterAddMs minWaitMs maxWaitMs (defaultArg maxSize Int32.MaxValue)
 
     /// Returns a non-batched version of the batched function. For each call, the batch
     /// execution is pushed forward to minWaitAfterAddMs after the call, but the batch waits
@@ -462,13 +622,12 @@ type Batch private () =
             maxWaitMs,
             ?maxSize
         ) : 'extra -> 'a -> Async<unit> =
-        let getBatched extra args =
-            async {
-                do! runBatched extra args
-                return args |> Array.map (fun x -> x, ())
-            }
-
-        createDebouncedWithExtra getBatched () minWaitAfterAddMs minWaitMs maxWaitMs (defaultArg maxSize Int32.MaxValue)
+        createDebouncedUnitWithExtra
+            runBatched
+            minWaitAfterAddMs
+            minWaitMs
+            maxWaitMs
+            (defaultArg maxSize Int32.MaxValue)
 
     /// Returns a non-batched version of the batched function. The batch is executed waitMs
     /// after the first call, or immediately when maxSize is reached (if specified). The

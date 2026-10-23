@@ -18,6 +18,7 @@
     <Compile Include="Failures.fs" />
     <Compile Include="ExecutionContext.fs" />
     <Compile Include="SystemEnvironment.fs" />
+    <Compile Include="Tracing.fs" />
     <Compile Include="Overloads.fs" />
   </ItemGroup>
 

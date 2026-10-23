@@ -181,12 +181,34 @@ Execution context
 -----------------
 
 A batch serves several callers, so the batched function runs without any caller's execution context: it sees default
-ambient values (e.g. `Activity.Current` and `IHttpContextAccessor.HttpContext` are `null`, and the culture is the thread
-pool's default), and its telemetry (e.g. SQL dependencies) is not correlated with any of the requests it serves. Pass
-anything the batched function needs as arguments or as the extra argument. To observe batch sizes, record them inside
-the batched function.
+ambient values (e.g. `IHttpContextAccessor.HttpContext` is `null`, `Activity.Current` is `null` unless tracing is on,
+and the culture is the thread pool's default), and its telemetry (e.g. SQL dependencies) isn't part of any request's
+trace. Pass anything the batched function needs as arguments or as the extra argument. To group the batched function's
+telemetry per batch and link it to the requests it serves, enable
+[tracing](https://github.com/cmeeren/BatchIt/blob/main/README.md#tracing).
 
 Callers continue in their own execution context and, if they have one, their `SynchronizationContext`.
+
+Tracing
+-------
+
+BatchIt can trace each run of a batched function as a span: an `Activity` from the activity source named `BatchIt`.
+Tracing is off until something listens to that source; with OpenTelemetry, add `.AddSource("BatchIt")` to your tracing
+configuration. Each span:
+
+* is named after the F# binding that creates the function passed to `Batch.Create`, usually the one that calls it, such
+  as `MyApp.People.getPerson` for `let getPerson = Batch.Create(...)` in the module `MyApp.People`. Spans of batchers
+  created in classes or pipelines are named after their module, or `BatchIt.Batch` if there is none.
+* starts its own trace and links to the current activity of the first call from each trace it serves (such as each
+  request), up to 128 traces
+* has the tags `batchit.batch.size` (the number of distinct arguments) and `batchit.batch.call_count` (the number of
+  calls)
+* is the current activity while the batched function runs, so that function's telemetry, such as SQL dependencies,
+  belongs to it
+* has error status and an `error.type` tag if the batched function fails
+
+Since each span starts its own trace, samplers decide on it independently of the requests it links to. With sampling,
+links may therefore point to requests that weren't recorded, and the other way around.
 
 Agent skill
 -----------
