@@ -74,7 +74,7 @@ $runId = $run[0].databaseId
 gh run watch $runId --repo $repo --exit-status
 ````
 
-   - Confirm the tag run succeeded and that the `Push` step performed a real NuGet upload. The workflow uses `--skip-duplicate`, so a successful step can mean the package already existed. Inspect the fresh run logs; if the push was skipped as a duplicate, logs are unavailable, or publication is unclear, stop and inspect/report before creating a GitHub Release.
+   - Confirm the tag run succeeded, including its `publish` job. That job pushes only the package whose version matches the tag and fails if NuGet already has that version, so success means this run uploaded it. If it failed, stop and inspect/report before creating a GitHub Release.
    - Verify the exact package version is visible on NuGet with [scripts/wait-for-nuget.js](scripts/wait-for-nuget.js). Run from the repository root with Node.js 22 or newer. The helper checks every 30 seconds for up to ten minutes, bounds each request to 15 seconds, and exits nonzero on timeout or an unexpected HTTP response. It retries HTTP 404, 429, server errors, and network failures; it does not publish anything. Wait using bounded tool waits rather than starting additional polling commands.
 
 ````powershell
@@ -85,7 +85,7 @@ if ($LASTEXITCODE -ne 0) { throw "NuGet availability check failed; do not create
 9. Refresh and inspect the GitHub Release notes immediately before creating the release:
    - Copy the exact release section from the tagged `RELEASE_NOTES.md` to a file under the user's temp directory, for example `$env:TEMP\batchit-release-v<Version>.md`.
    - Read the tagged file with `git show "v/<Version>:RELEASE_NOTES.md"` so the notes match the commit that was packaged and published.
-   - Inspect the temporary file. Include only the released version's notes, not the whole changelog or a stale `Unreleased` heading. Make documentation links absolute so they work from the GitHub Release page, using the release tag for version-specific documentation.
+   - Inspect the temporary file. Include only the released version's notes, not the whole changelog or a stale `Unreleased` heading. Check that its links work from the GitHub Release page, which resolves relative links such as `README.md#<anchor>` against the release tag.
 
 10. Create the GitHub Release only after successful NuGet publication, notes inspection, and authorization for that action:
 
