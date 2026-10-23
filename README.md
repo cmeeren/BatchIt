@@ -113,7 +113,26 @@ received it or an equal value. The results can be in any order.
 
 If the results don't contain the argument itself, such as for composite arguments, have the query return the argument
 with each row, for example by joining a table-valued parameter of the arguments. For one-to-many lookups, group the
-rows by argument and return list or array results.
+rows by argument and return list or array results:
+
+```f#
+type OrderKey = { CustomerId: Guid; Year: int }
+
+let getOrdersBatched (keys: OrderKey array) : Async<(OrderKey * Order list) array> =
+    async {
+        // The query joins a table-valued parameter of the keys and returns each key's columns with every order.
+        let! rows = Db.getOrdersForKeys keys
+
+        return
+            rows
+            |> Array.groupBy (fun row -> { CustomerId = row.KeyCustomerId; Year = row.KeyYear })
+            |> Array.map (fun (key, rows) -> key, rows |> Array.map (fun row -> row.Order) |> List.ofArray)
+    }
+
+// Keys without orders get an empty list.
+let getOrders: OrderKey -> Async<Order list> =
+    Batch.Create(getOrdersBatched, minWaitAfterAddMs = 10, minWaitMs = 10, maxWaitMs = 500)
+```
 
 Arguments that the batched function returns no result for get a not-found value, chosen by the result type:
 
