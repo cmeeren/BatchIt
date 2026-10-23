@@ -2,19 +2,28 @@
 
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
-    <GenerateProgramFile>false</GenerateProgramFile>
+    <OutputType>Exe</OutputType>
+    <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
+    <!-- Lets Faqt name the subjects of assertions in failure messages also when source paths are mapped. -->
+    <DebugType>embedded</DebugType>
+    <EmbedAllSources>true</EmbedAllSources>
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="Tests.fs" />
-    <Compile Include="Program.fs" />
+    <Compile Include="TestUtils.fs" />
+    <Compile Include="Timing.fs" />
+    <Compile Include="MaxSize.fs" />
+    <Compile Include="ItemsAndResults.fs" />
+    <Compile Include="Extra.fs" />
+    <Compile Include="Failures.fs" />
+    <Compile Include="ExecutionContext.fs" />
+    <Compile Include="SystemEnvironment.fs" />
+    <Compile Include="Overloads.fs" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Expecto" Version="10.2.1" />
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
-    <PackageReference Include="Unquote" Version="7.0.0" />
-    <PackageReference Include="YoloDev.Expecto.TestSdk" Version="0.14.3" />
+    <PackageReference Include="Faqt" Version="6.0.0" />
+    <PackageReference Include="xunit.v3.core.mtp-v2" Version="4.0.2" />
     <PackageReference Update="FSharp.Core" Version="8.0.401" />
   </ItemGroup>
 
