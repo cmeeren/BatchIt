@@ -93,7 +93,8 @@ mind:
   `maxWaitMs`.
 * **Throttle:** `Batch.Create(getBatched, waitMs)` runs a batch `waitMs` after its first call.
 * **Maximum size:** Both accept an optional `maxSize`, which runs a batch as soon as it has that many distinct
-  arguments. Use it when your batched function has an input limit, such as a maximum number of SQL parameters.
+  arguments. Use it when your batched function has an input limit, such as an API that accepts at most 100 IDs per
+  request, or to keep each query's size and duration in check.
 
 A short `minWaitAfterAddMs` and `minWaitMs`, such as 10 ms, is usually enough to collect calls that happen
 concurrently. Set `maxWaitMs` to the most latency you accept under load, such as 500 ms; `maxSize` can also end
