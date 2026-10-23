@@ -109,6 +109,10 @@ BatchIt’s only public API is the `Batch.Create` overloads. You have the follow
     and `Array.empty`, respectively
   * For other types, you must supply the missing value yourself
 
+Waits are in milliseconds and must be non-negative, `maxWaitMs` must be at least `minWaitMs`, and `maxSize` must be at
+least 1; otherwise, `Batch.Create` throws `ArgumentException`. Arguments are deduplicated and matched with results using
+F# structural equality, so e.g. equal arrays are the same argument.
+
 Extra parameters to the batched function (e.g. connection strings)
 ------------------------------------------------------------------
 
@@ -136,6 +140,20 @@ If the non-batched function is called with different values for the extra argume
 run as part of the same batch (regarding timing, max size, etc.), but the batched arguments are grouped by the
 corresponding extra argument value and the batched function is then invoked once for each unique extra value (with the
 corresponding batched arguments).
+
+Errors and cancellation
+-----------------------
+
+If the batched function throws or is canceled, the calls it was invoked for throw the same exception or are canceled.
+With extra arguments, this only affects the calls with the same extra value.
+
+Execution context
+-----------------
+
+A batch serves several callers, so the batched function runs without any caller’s execution context: it sees default
+ambient values (e.g. `Activity.Current` is `null` and the culture is the thread pool’s default), and its telemetry (e.g.
+SQL dependencies) is not correlated with any of the requests it serves. Callers continue in their own execution context
+and, if they have one, their `SynchronizationContext`.
 
 Contributing
 ------------

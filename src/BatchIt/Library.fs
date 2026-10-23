@@ -1,201 +1,335 @@
-﻿namespace BatchIt
+namespace BatchIt
 
 open System
 open System.Collections.Generic
+open System.Diagnostics
+open System.Runtime.CompilerServices
+open System.Threading
 open System.Threading.Tasks
+
+[<assembly: InternalsVisibleTo("BatchIt.Tests")>]
+do ()
+
+
+/// Wraps a dictionary key so that null keys are allowed and keys are compared with F# structural equality.
+[<Struct>]
+type internal Key<'T> = Key of 'T
+
+
+/// A timer that calls a fixed callback once when due.
+type internal IBatchTimer =
+    /// Schedules the callback to run after the delay, replacing any earlier schedule.
+    abstract Schedule: delay: TimeSpan -> unit
+
+
+/// The clock, timers and thread pool that a batcher uses.
+type internal IBatchEnvironment =
+    /// Returns the current time on a monotonic clock.
+    abstract Now: unit -> TimeSpan
+
+    /// Creates an unscheduled timer for the callback.
+    abstract CreateTimer: callback: (unit -> unit) -> IBatchTimer
+
+    /// Runs the work on the thread pool without the current execution context.
+    abstract Queue: work: (unit -> unit) -> unit
+
+
+[<Sealed>]
+type internal SystemBatchTimer(callback: unit -> unit) =
+
+    // Created without the current execution context, so that the callback doesn't run in the context of whichever
+    // caller created the batcher. While scheduled, the timer stays alive through its callback, which references the
+    // batcher and thereby this timer, so pending batches run even if nothing else references the batcher.
+    let timer =
+        let create () =
+            new Timer((fun _ -> callback ()), null, Timeout.Infinite, Timeout.Infinite)
+
+        if ExecutionContext.IsFlowSuppressed() then
+            create ()
+        else
+            use _ = ExecutionContext.SuppressFlow()
+            create ()
+
+    interface IBatchTimer with
+        member _.Schedule delay =
+            timer.Change(int64 (Math.Ceiling delay.TotalMilliseconds), int64 Timeout.Infinite)
+            |> ignore
+
+
+[<Sealed>]
+type internal SystemBatchEnvironment() =
+
+    let stopwatch = Stopwatch.StartNew()
+
+    interface IBatchEnvironment with
+        member _.Now() = stopwatch.Elapsed
+
+        member _.CreateTimer callback =
+            SystemBatchTimer callback :> IBatchTimer
+
+        member _.Queue work =
+            ThreadPool.UnsafeQueueUserWorkItem(WaitCallback(fun _ -> work ()), null)
+            |> ignore
+
+
+/// When a pending batch is due.
+type internal BatchTiming =
+    /// A fixed wait after the first item.
+    | Throttle of wait: TimeSpan
+    /// minWaitAfterAdd after the last item, but at least minWait and at most maxWait after the first item.
+    | Debounce of minWaitAfterAdd: TimeSpan * minWait: TimeSpan * maxWait: TimeSpan
+
+
+/// The items of a batch that have the same 'extra value, and their results.
+type internal BatchGroup<'extra, 'a, 'b> = {
+    Extra: 'extra
+    Items: ResizeArray<'a>
+    ItemKeys: HashSet<Key<'a>>
+    Results: TaskCompletionSource<Dictionary<Key<'a>, 'b>>
+}
+
+
+type internal PendingBatch<'extra, 'a, 'b> = {
+    FirstAdd: TimeSpan
+    mutable LastAdd: TimeSpan
+    mutable ItemCount: int
+    Groups: Dictionary<Key<'extra>, BatchGroup<'extra, 'a, 'b>>
+}
 
 
 [<AutoOpen>]
-module private Batch =
+module internal TaskHelpers =
 
-
-    /// Pipe-friendly name for max.
-    let atLeast other this = max other this
-
-    /// Pipe-friendly name for min.
-    let atMost other this = min other this
-
-    let msSince (dt: DateTime) =
-        int (DateTime.Now - dt).TotalMilliseconds
-
-
-    type private GetNonBatched<'extra, 'a, 'b> = 'extra -> 'a -> Async<'b>
-    type private GetBatched<'extra, 'a, 'b> = 'extra -> 'a[] -> Async<('a * 'b)[]>
-
-    type Batch<'extra, 'a, 'b> = {
-        GetBatched: GetBatched<'extra, 'a, 'b>
-        WaitMs: int
-        MinWaitAfterAddMs: int voption
-        MaxWaitMs: int
-        MaxSize: int
-        Items: IDictionary<struct ('extra * 'a), unit>
-        Result: TaskCompletionSource<IDictionary<struct ('extra * 'a), 'b>>
-        mutable FirstAdd: DateTime
-        mutable LastAdd: DateTime
-        mutable IsScheduled: bool
-    }
-
-
-    let msUntilExpiration batch =
-        if batch.FirstAdd = DateTime.MinValue then
-            ValueNone
-        else
-            match batch.MinWaitAfterAddMs with
-            | ValueNone -> batch.WaitMs - msSince batch.FirstAdd
-            | ValueSome minMsAfterAdd ->
-                let msRemainingFromInitialWait = batch.WaitMs - msSince batch.FirstAdd
-                let msRemainingFromMaxWait = batch.MaxWaitMs - msSince batch.FirstAdd
-                let msRemainingFromLastAdd = minMsAfterAdd - msSince batch.LastAdd
-
-                msRemainingFromLastAdd
-                |> atLeast msRemainingFromInitialWait
-                |> atMost msRemainingFromMaxWait
-            |> ValueSome
-
-
-    let run batch =
+    /// Like Async.AwaitTask, but raises the task's own exception instead of an AggregateException.
+    let awaitTask (task: Task<'T>) : Async<'T> =
         async {
-            let itemsByExtra =
-                batch.Items.Keys
-                |> Seq.groupBy (fun struct (extra, _) -> extra)
-                |> Seq.map (fun (extra, extraAndItems) ->
-                    extra, extraAndItems |> Seq.map (fun struct (_, item) -> item) |> Seq.toArray
+            // Async.AwaitTask continues in the caller's SynchronizationContext (if any) and execution context. Awaiting
+            // this continuation instead of the task itself never raises, so the task's own exception can be raised.
+            do!
+                task.ContinueWith(
+                    Action<Task<'T>>(ignore),
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default
                 )
-                |> Array.ofSeq
+                |> Async.AwaitTask
 
-            // Clear captured items to release references before awaiting user code.
-            batch.Items.Clear()
+            return!
+                Async.FromContinuations(fun (onSuccess, onError, onCancel) ->
+                    if task.IsCanceled then
+                        onCancel (OperationCanceledException())
+                    elif task.IsFaulted then
+                        let ex = task.Exception
 
-            try
-                let! resultsByExtra =
-                    itemsByExtra
-                    |> Array.map (fun (extra, items) -> batch.GetBatched extra items)
-                    |> Async.Parallel
-
-                (itemsByExtra, resultsByExtra)
-                ||> Array.zip
-                |> Array.collect (fun ((extra, _), results) ->
-                    results |> Array.map (fun (item, value) -> struct (extra, item), value)
-                )
-                |> dict
-                |> batch.Result.SetResult
-            with ex ->
-                batch.Result.SetException ex
-        }
-        |> Async.Start
-
-
-    let create getBatched waitMs minWaitAfterAddMs maxWaitMs maxSize = {
-        GetBatched = getBatched
-        WaitMs = waitMs
-        MinWaitAfterAddMs = minWaitAfterAddMs
-        MaxWaitMs = maxWaitMs
-        MaxSize = maxSize
-        Items = Dictionary()
-        Result = TaskCompletionSource<IDictionary<struct ('extra * 'a), 'b>>()
-        FirstAdd = DateTime.MinValue
-        LastAdd = DateTime.MinValue
-        IsScheduled = false
-    }
-
-
-    let addItem extra item batch =
-        if batch.Items.Count = 0 then
-            batch.FirstAdd <- DateTime.Now
-
-        batch.LastAdd <- DateTime.Now
-        batch.Items[struct (extra, item)] <- ()
-
-
-    type Msg<'extra, 'a, 'b> =
-        | Add of AsyncReplyChannel<GetNonBatched<'extra, 'a, 'b>> * extra: 'extra * item: 'a
-        | RunOrReschedule
-
-
-    let createBatchAgent
-        (getBatched: GetBatched<'extra, 'a, 'b>)
-        (notFound: 'b)
-        waitMs
-        minWaitAfterAddMs
-        maxWaitMs
-        maxSize
-        : MailboxProcessor<Msg<'extra, 'a, 'b>> =
-
-        /// Returns a non-batched function that returns a specified item in the batch
-        let nonBatchedItemAwaiterFor batch : GetNonBatched<'extra, 'a, 'b> =
-            fun extra x ->
-                async {
-                    let! res = batch.Result.Task |> Async.AwaitTask
-
-                    match res.TryGetValue(struct (extra, x)) with
-                    | false, _ -> return notFound
-                    | true, x -> return x
-                }
-
-        MailboxProcessor.Start(fun inbox ->
-
-            /// Runs the batch if it's due, or (re-)schedules it.
-            let runOrSchedule batch =
-                match msUntilExpiration batch with
-                | ValueNone -> batch
-                | ValueSome x when x <= 2 -> // Not necessary to reschedule if expiration is imminent
-                    run batch
-                    let newBatch = create getBatched waitMs minWaitAfterAddMs maxWaitMs maxSize
-                    newBatch
-                | ValueSome ms ->
-                    batch.IsScheduled <- true
-
-                    async {
-                        do! Async.Sleep ms
-                        inbox.Post RunOrReschedule
-                    }
-                    |> Async.Start
-
-                    batch
-
-            let rec loop (batch: Batch<'extra, 'a, 'b>) =
-                async {
-                    match! inbox.Receive() with
-
-                    | Add(replyChannel, extra, item) ->
-                        batch |> addItem extra item
-
-                        replyChannel.Reply(nonBatchedItemAwaiterFor batch)
-
-                        if batch.Items.Count >= batch.MaxSize then
-                            // Batch full, run immediately and create new batch
-                            run batch
-                            let newBatch = create getBatched waitMs minWaitAfterAddMs maxWaitMs maxSize
-                            return! loop newBatch
-                        elif batch.IsScheduled then
-                            // Already scheduled, we don't need to do anything here
-                            return! loop batch
+                        if ex.InnerExceptions.Count = 1 then
+                            onError ex.InnerExceptions[0]
                         else
-                            return! runOrSchedule batch |> loop
-
-                    | RunOrReschedule -> return! runOrSchedule batch |> loop
-                }
-
-            loop (create getBatched waitMs minWaitAfterAddMs maxWaitMs maxSize)
-        )
+                            onError ex
+                    else
+                        onSuccess task.Result
+                )
+        }
 
 
-    let createBatched<'extra, 'a, 'b when 'a: equality and 'extra: equality>
-        (getBatched: GetBatched<'extra, 'a, 'b>)
-        (notFound: 'b)
-        initialWaitMs
+/// Collects calls into batches and runs the batched function for them.
+[<Sealed>]
+type internal Batcher<'extra, 'a, 'b when 'extra: equality and 'a: equality>
+    (
+        env: IBatchEnvironment,
+        getBatched: 'extra -> 'a[] -> Async<('a * 'b)[]>,
+        notFound: 'b,
+        timing: BatchTiming,
+        maxSize: int
+    ) =
+
+    let sync = obj ()
+    let mutable pending: PendingBatch<'extra, 'a, 'b> voption = ValueNone
+    let mutable timer = Unchecked.defaultof<IBatchTimer>
+
+    let dueTime (batch: PendingBatch<'extra, 'a, 'b>) =
+        match timing with
+        | Throttle wait -> batch.FirstAdd + wait
+        | Debounce(minWaitAfterAdd, minWait, maxWait) ->
+            max (batch.LastAdd + minWaitAfterAdd) (batch.FirstAdd + minWait)
+            |> min (batch.FirstAdd + maxWait)
+
+    let runGroup (group: BatchGroup<'extra, 'a, 'b>) =
+        let setResults (results: ('a * 'b)[]) =
+            try
+                let resultsByItem = Dictionary(results.Length)
+
+                for item, value in results do
+                    resultsByItem[Key item] <- value
+
+                group.Results.TrySetResult resultsByItem |> ignore
+            with ex ->
+                group.Results.TrySetException ex |> ignore
+
+        try
+            Async.StartWithContinuations(
+                getBatched group.Extra (group.Items.ToArray()),
+                setResults,
+                (fun ex -> group.Results.TrySetException ex |> ignore),
+                (fun _ -> group.Results.TrySetCanceled() |> ignore),
+                CancellationToken.None
+            )
+        with ex ->
+            group.Results.TrySetException ex |> ignore
+
+    let run (batch: PendingBatch<'extra, 'a, 'b>) =
+        for group in batch.Groups.Values do
+            // A group is empty if adding its only item failed.
+            if group.Items.Count > 0 then
+                env.Queue(fun () -> runGroup group)
+
+    let onTimer () =
+        let dueBatch =
+            lock
+                sync
+                (fun () ->
+                    match pending with
+                    | ValueNone -> ValueNone
+                    | ValueSome batch ->
+                        let now = env.Now()
+                        let due = dueTime batch
+
+                        if due <= now then
+                            pending <- ValueNone
+                            ValueSome batch
+                        else
+                            // A later item extended the wait, the timer fired early, or the timer was set for an earlier
+                            // batch that ran when it became full.
+                            timer.Schedule(due - now)
+                            ValueNone
+                )
+
+        match dueBatch with
+        | ValueSome batch -> run batch
+        | ValueNone -> ()
+
+    do timer <- env.CreateTimer onTimer
+
+    /// Adds the item to the pending batch, starting a new batch if needed, and returns the results for its group.
+    let add (extra: 'extra) (item: 'a) =
+        let struct (results, fullOrDueBatch) =
+            lock
+                sync
+                (fun () ->
+                    let now = env.Now()
+
+                    let batch, isNew =
+                        match pending with
+                        | ValueSome batch -> batch, false
+                        | ValueNone ->
+                            {
+                                FirstAdd = now
+                                LastAdd = now
+                                ItemCount = 0
+                                Groups = Dictionary()
+                            },
+                            true
+
+                    // Equality and hashing of items and extra values may throw. This leaves the pending batch as it was,
+                    // apart from possibly an empty group.
+                    let group =
+                        match batch.Groups.TryGetValue(Key extra) with
+                        | true, group -> group
+                        | false, _ ->
+                            let group = {
+                                Extra = extra
+                                Items = ResizeArray()
+                                ItemKeys = HashSet()
+                                Results = TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
+                            }
+
+                            batch.Groups[Key extra] <- group
+                            group
+
+                    if group.ItemKeys.Add(Key item) then
+                        group.Items.Add item
+                        batch.ItemCount <- batch.ItemCount + 1
+
+                    batch.LastAdd <- now
+                    let due = dueTime batch
+
+                    if batch.ItemCount >= maxSize || due <= now then
+                        pending <- ValueNone
+                        struct (group.Results.Task, ValueSome batch)
+                    else
+                        if isNew then
+                            pending <- ValueSome batch
+                            timer.Schedule(due - now)
+
+                        struct (group.Results.Task, ValueNone)
+                )
+
+        match fullOrDueBatch with
+        | ValueSome batch -> run batch
+        | ValueNone -> ()
+
+        results
+
+    /// Returns the result for the item from the batch it's added to.
+    member _.Get (extra: 'extra) (item: 'a) : Async<'b> =
+        async {
+            let! resultsByItem = add extra item |> awaitTask
+
+            match resultsByItem.TryGetValue(Key item) with
+            | true, value -> return value
+            | false, _ -> return notFound
+        }
+
+
+[<AutoOpen>]
+module private Create =
+
+    let private fromMs (ms: int) =
+        TimeSpan.FromTicks(int64 ms * TimeSpan.TicksPerMillisecond)
+
+    let private validateMaxSize maxSize =
+        if maxSize < 1 then
+            invalidArg "maxSize" "Must be at least 1."
+
+    let private createBatched getBatched notFound timing maxSize : 'extra -> 'a -> Async<'b> =
+        Batcher(SystemBatchEnvironment(), getBatched, notFound, timing, maxSize).Get
+
+    let createThrottledWithExtra getBatched notFound waitMs maxSize =
+        if waitMs < 0 then
+            invalidArg "waitMs" "Must be non-negative."
+
+        validateMaxSize maxSize
+        createBatched getBatched notFound (Throttle(fromMs waitMs)) maxSize
+
+    let createDebouncedWithExtra getBatched notFound minWaitAfterAddMs minWaitMs maxWaitMs maxSize =
+        if minWaitAfterAddMs < 0 then
+            invalidArg "minWaitAfterAddMs" "Must be non-negative."
+
+        if minWaitMs < 0 then
+            invalidArg "minWaitMs" "Must be non-negative."
+
+        if maxWaitMs < minWaitMs then
+            invalidArg "maxWaitMs" "Must be at least minWaitMs."
+
+        validateMaxSize maxSize
+
+        createBatched
+            getBatched
+            notFound
+            (Debounce(fromMs minWaitAfterAddMs, fromMs minWaitMs, fromMs maxWaitMs))
+            maxSize
+
+    let createThrottled (getBatched: 'a[] -> Async<('a * 'b)[]>) notFound waitMs maxSize : 'a -> Async<'b> =
+        createThrottledWithExtra (fun () -> getBatched) notFound waitMs maxSize ()
+
+    let createDebounced
+        (getBatched: 'a[] -> Async<('a * 'b)[]>)
+        notFound
         minWaitAfterAddMs
+        minWaitMs
         maxWaitMs
         maxSize
-        : GetNonBatched<'extra, 'a, 'b> =
-        let agent =
-            createBatchAgent getBatched notFound initialWaitMs minWaitAfterAddMs maxWaitMs maxSize
-
-        fun extra x ->
-            async {
-                let! nonBatched = agent.PostAndAsyncReply(fun replyChannel -> Add(replyChannel, extra, x))
-                return! nonBatched extra x
-            }
+        : 'a -> Async<'b> =
+        createDebouncedWithExtra (fun () -> getBatched) notFound minWaitAfterAddMs minWaitMs maxWaitMs maxSize ()
 
 
 [<AbstractClass; Sealed>]
@@ -205,7 +339,7 @@ type Batch private () =
     /// after the first call, or immediately when maxSize is reached (if specified). The
     /// returned non-batched function will return None for items that are not found.
     static member Create(getBatched: 'a[] -> Async<('a * 'b option)[]>, waitMs, ?maxSize) : 'a -> Async<'b option> =
-        createBatched (fun () -> getBatched) None waitMs ValueNone waitMs (defaultArg maxSize Int32.MaxValue) ()
+        createThrottled getBatched None waitMs (defaultArg maxSize Int32.MaxValue)
 
     /// Returns a non-batched version of the batched function. The batch is executed waitMs
     /// after the first call, or immediately when maxSize is reached (if specified). The
@@ -221,11 +355,11 @@ type Batch private () =
             waitMs,
             ?maxSize
         ) : 'extra -> 'a -> Async<'b option> =
-        createBatched getBatched None waitMs ValueNone waitMs (defaultArg maxSize Int32.MaxValue)
+        createThrottledWithExtra getBatched None waitMs (defaultArg maxSize Int32.MaxValue)
 
     /// Returns a non-batched version of the batched function. For each call, the batch
     /// execution is pushed forward to minWaitAfterAddMs after the call, but the batch waits
-    /// at least initialWaitMs and at most maxWaitMs  after the first call. The batch is
+    /// at least minWaitMs and at most maxWaitMs after the first call. The batch is
     /// also run immediately when maxSize is reached (if specified). The returned
     /// non-batched function will return None for items that are not found.
     static member Create
@@ -236,18 +370,11 @@ type Batch private () =
             maxWaitMs,
             ?maxSize
         ) : 'a -> Async<'b option> =
-        createBatched
-            (fun () -> getBatched)
-            None
-            minWaitMs
-            (ValueSome minWaitAfterAddMs)
-            maxWaitMs
-            (defaultArg maxSize Int32.MaxValue)
-            ()
+        createDebounced getBatched None minWaitAfterAddMs minWaitMs maxWaitMs (defaultArg maxSize Int32.MaxValue)
 
     /// Returns a non-batched version of the batched function. For each call, the batch
     /// execution is pushed forward to minWaitAfterAddMs after the call, but the batch waits
-    /// at least initialWaitMs and at most maxWaitMs  after the first call. The batch is
+    /// at least minWaitMs and at most maxWaitMs after the first call. The batch is
     /// also run immediately when maxSize is reached (if specified). The returned
     /// non-batched function will return None for items that are not found.
     ///
@@ -263,24 +390,24 @@ type Batch private () =
             maxWaitMs,
             ?maxSize
         ) : 'extra -> 'a -> Async<'b option> =
-        createBatched
+        createDebouncedWithExtra
             getBatched
             None
+            minWaitAfterAddMs
             minWaitMs
-            (ValueSome minWaitAfterAddMs)
             maxWaitMs
             (defaultArg maxSize Int32.MaxValue)
 
     /// Returns a non-batched version of the batched function. The batch is executed waitMs
     /// after the first call, or immediately when maxSize is reached (if specified).
     static member Create(runBatched: 'a[] -> Async<unit>, waitMs, ?maxSize) : 'a -> Async<unit> =
-        let getBatched () args =
+        let getBatched args =
             async {
                 do! runBatched args
                 return args |> Array.map (fun x -> x, ())
             }
 
-        createBatched getBatched () waitMs ValueNone waitMs (defaultArg maxSize Int32.MaxValue) ()
+        createThrottled getBatched () waitMs (defaultArg maxSize Int32.MaxValue)
 
     /// Returns a non-batched version of the batched function. The batch is executed waitMs
     /// after the first call, or immediately when maxSize is reached (if specified).
@@ -296,11 +423,11 @@ type Batch private () =
                 return args |> Array.map (fun x -> x, ())
             }
 
-        createBatched getBatched () waitMs ValueNone waitMs (defaultArg maxSize Int32.MaxValue)
+        createThrottledWithExtra getBatched () waitMs (defaultArg maxSize Int32.MaxValue)
 
     /// Returns a non-batched version of the batched function. For each call, the batch
     /// execution is pushed forward to minWaitAfterAddMs after the call, but the batch waits
-    /// at least initialWaitMs and at most maxWaitMs  after the first call. The batch is
+    /// at least minWaitMs and at most maxWaitMs after the first call. The batch is
     /// also run immediately when maxSize is reached (if specified).
     static member Create
         (
@@ -310,24 +437,17 @@ type Batch private () =
             maxWaitMs,
             ?maxSize
         ) : 'a -> Async<unit> =
-        let getBatched () args =
+        let getBatched args =
             async {
                 do! runBatched args
                 return args |> Array.map (fun x -> x, ())
             }
 
-        createBatched
-            getBatched
-            ()
-            minWaitMs
-            (ValueSome minWaitAfterAddMs)
-            maxWaitMs
-            (defaultArg maxSize Int32.MaxValue)
-            ()
+        createDebounced getBatched () minWaitAfterAddMs minWaitMs maxWaitMs (defaultArg maxSize Int32.MaxValue)
 
     /// Returns a non-batched version of the batched function. For each call, the batch
     /// execution is pushed forward to minWaitAfterAddMs after the call, but the batch waits
-    /// at least initialWaitMs and at most maxWaitMs  after the first call. The batch is
+    /// at least minWaitMs and at most maxWaitMs after the first call. The batch is
     /// also run immediately when maxSize is reached (if specified).
     ///
     /// The 'extra arg allows you to pass e.g. a connection string. If the non-batched
@@ -348,19 +468,13 @@ type Batch private () =
                 return args |> Array.map (fun x -> x, ())
             }
 
-        createBatched
-            getBatched
-            ()
-            minWaitMs
-            (ValueSome minWaitAfterAddMs)
-            maxWaitMs
-            (defaultArg maxSize Int32.MaxValue)
+        createDebouncedWithExtra getBatched () minWaitAfterAddMs minWaitMs maxWaitMs (defaultArg maxSize Int32.MaxValue)
 
     /// Returns a non-batched version of the batched function. The batch is executed waitMs
     /// after the first call, or immediately when maxSize is reached (if specified). The
     /// returned non-batched function will return ValueNone for items that are not found.
     static member Create(getBatched: 'a[] -> Async<('a * 'b voption)[]>, waitMs, ?maxSize) : 'a -> Async<'b voption> =
-        createBatched (fun () -> getBatched) ValueNone waitMs ValueNone waitMs (defaultArg maxSize Int32.MaxValue) ()
+        createThrottled getBatched ValueNone waitMs (defaultArg maxSize Int32.MaxValue)
 
     /// Returns a non-batched version of the batched function. The batch is executed waitMs
     /// after the first call, or immediately when maxSize is reached (if specified). The
@@ -376,11 +490,11 @@ type Batch private () =
             waitMs,
             ?maxSize
         ) : 'extra -> 'a -> Async<'b voption> =
-        createBatched getBatched ValueNone waitMs ValueNone waitMs (defaultArg maxSize Int32.MaxValue)
+        createThrottledWithExtra getBatched ValueNone waitMs (defaultArg maxSize Int32.MaxValue)
 
     /// Returns a non-batched version of the batched function. For each call, the batch
     /// execution is pushed forward to minWaitAfterAddMs after the call, but the batch waits
-    /// at least initialWaitMs and at most maxWaitMs  after the first call. The batch is
+    /// at least minWaitMs and at most maxWaitMs after the first call. The batch is
     /// also run immediately when maxSize is reached (if specified). The returned
     /// non-batched function will return ValueNone for items that are not found.
     static member Create
@@ -391,18 +505,11 @@ type Batch private () =
             maxWaitMs,
             ?maxSize
         ) : 'a -> Async<'b voption> =
-        createBatched
-            (fun () -> getBatched)
-            ValueNone
-            minWaitMs
-            (ValueSome minWaitAfterAddMs)
-            maxWaitMs
-            (defaultArg maxSize Int32.MaxValue)
-            ()
+        createDebounced getBatched ValueNone minWaitAfterAddMs minWaitMs maxWaitMs (defaultArg maxSize Int32.MaxValue)
 
     /// Returns a non-batched version of the batched function. For each call, the batch
     /// execution is pushed forward to minWaitAfterAddMs after the call, but the batch waits
-    /// at least initialWaitMs and at most maxWaitMs  after the first call. The batch is
+    /// at least minWaitMs and at most maxWaitMs after the first call. The batch is
     /// also run immediately when maxSize is reached (if specified). The returned
     /// non-batched function will return ValueNone for items that are not found.
     ///
@@ -418,11 +525,11 @@ type Batch private () =
             maxWaitMs,
             ?maxSize
         ) : 'extra -> 'a -> Async<'b voption> =
-        createBatched
+        createDebouncedWithExtra
             getBatched
             ValueNone
+            minWaitAfterAddMs
             minWaitMs
-            (ValueSome minWaitAfterAddMs)
             maxWaitMs
             (defaultArg maxSize Int32.MaxValue)
 
@@ -431,7 +538,7 @@ type Batch private () =
     /// returned non-batched function will return an empty list for items that are not
     /// found.
     static member Create(getBatched: 'a[] -> Async<('a * 'b list)[]>, waitMs, ?maxSize) : 'a -> Async<'b list> =
-        createBatched (fun () -> getBatched) [] waitMs ValueNone waitMs (defaultArg maxSize Int32.MaxValue) ()
+        createThrottled getBatched [] waitMs (defaultArg maxSize Int32.MaxValue)
 
     /// Returns a non-batched version of the batched function. The batch is executed waitMs
     /// after the first call, or immediately when maxSize is reached (if specified). The
@@ -448,11 +555,11 @@ type Batch private () =
             waitMs,
             ?maxSize
         ) : 'extra -> 'a -> Async<'b list> =
-        createBatched getBatched [] waitMs ValueNone waitMs (defaultArg maxSize Int32.MaxValue)
+        createThrottledWithExtra getBatched [] waitMs (defaultArg maxSize Int32.MaxValue)
 
     /// Returns a non-batched version of the batched function. For each call, the batch
     /// execution is pushed forward to minWaitAfterAddMs after the call, but the batch waits
-    /// at least initialWaitMs and at most maxWaitMs  after the first call. The batch is
+    /// at least minWaitMs and at most maxWaitMs after the first call. The batch is
     /// also run immediately when maxSize is reached (if specified). The returned
     /// non-batched function will return an empty list for items that are not found.
     static member Create
@@ -463,18 +570,11 @@ type Batch private () =
             maxWaitMs,
             ?maxSize
         ) : 'a -> Async<'b list> =
-        createBatched
-            (fun () -> getBatched)
-            []
-            minWaitMs
-            (ValueSome minWaitAfterAddMs)
-            maxWaitMs
-            (defaultArg maxSize Int32.MaxValue)
-            ()
+        createDebounced getBatched [] minWaitAfterAddMs minWaitMs maxWaitMs (defaultArg maxSize Int32.MaxValue)
 
     /// Returns a non-batched version of the batched function. For each call, the batch
     /// execution is pushed forward to minWaitAfterAddMs after the call, but the batch waits
-    /// at least initialWaitMs and at most maxWaitMs  after the first call. The batch is
+    /// at least minWaitMs and at most maxWaitMs after the first call. The batch is
     /// also run immediately when maxSize is reached (if specified). The returned
     /// non-batched function will return an empty list for items that are not found.
     ///
@@ -490,20 +590,14 @@ type Batch private () =
             maxWaitMs,
             ?maxSize
         ) : 'extra -> 'a -> Async<'b list> =
-        createBatched
-            getBatched
-            []
-            minWaitMs
-            (ValueSome minWaitAfterAddMs)
-            maxWaitMs
-            (defaultArg maxSize Int32.MaxValue)
+        createDebouncedWithExtra getBatched [] minWaitAfterAddMs minWaitMs maxWaitMs (defaultArg maxSize Int32.MaxValue)
 
     /// Returns a non-batched version of the batched function. The batch is executed waitMs
     /// after the first call, or immediately when maxSize is reached (if specified). The
     /// returned non-batched function will return an empty array for items that are not
     /// found.
     static member Create(getBatched: 'a[] -> Async<('a * 'b[])[]>, waitMs, ?maxSize) : 'a -> Async<'b[]> =
-        createBatched (fun () -> getBatched) [||] waitMs ValueNone waitMs (defaultArg maxSize Int32.MaxValue) ()
+        createThrottled getBatched [||] waitMs (defaultArg maxSize Int32.MaxValue)
 
     /// Returns a non-batched version of the batched function. The batch is executed waitMs
     /// after the first call, or immediately when maxSize is reached (if specified). The
@@ -520,11 +614,11 @@ type Batch private () =
             waitMs,
             ?maxSize
         ) : 'extra -> 'a -> Async<'b[]> =
-        createBatched getBatched [||] waitMs ValueNone waitMs (defaultArg maxSize Int32.MaxValue)
+        createThrottledWithExtra getBatched [||] waitMs (defaultArg maxSize Int32.MaxValue)
 
     /// Returns a non-batched version of the batched function. For each call, the batch
     /// execution is pushed forward to minWaitAfterAddMs after the call, but the batch waits
-    /// at least initialWaitMs and at most maxWaitMs  after the first call. The batch is
+    /// at least minWaitMs and at most maxWaitMs after the first call. The batch is
     /// also run immediately when maxSize is reached (if specified). The returned
     /// non-batched function will return an empty array for items that are not found.
     static member Create
@@ -535,18 +629,11 @@ type Batch private () =
             maxWaitMs,
             ?maxSize
         ) : 'a -> Async<'b[]> =
-        createBatched
-            (fun () -> getBatched)
-            [||]
-            minWaitMs
-            (ValueSome minWaitAfterAddMs)
-            maxWaitMs
-            (defaultArg maxSize Int32.MaxValue)
-            ()
+        createDebounced getBatched [||] minWaitAfterAddMs minWaitMs maxWaitMs (defaultArg maxSize Int32.MaxValue)
 
     /// Returns a non-batched version of the batched function. For each call, the batch
     /// execution is pushed forward to minWaitAfterAddMs after the call, but the batch waits
-    /// at least initialWaitMs and at most maxWaitMs  after the first call. The batch is
+    /// at least minWaitMs and at most maxWaitMs after the first call. The batch is
     /// also run immediately when maxSize is reached (if specified). The returned
     /// non-batched function will return an empty array for items that are not found.
     ///
@@ -562,11 +649,11 @@ type Batch private () =
             maxWaitMs,
             ?maxSize
         ) : 'extra -> 'a -> Async<'b[]> =
-        createBatched
+        createDebouncedWithExtra
             getBatched
             [||]
+            minWaitAfterAddMs
             minWaitMs
-            (ValueSome minWaitAfterAddMs)
             maxWaitMs
             (defaultArg maxSize Int32.MaxValue)
 
@@ -574,7 +661,7 @@ type Batch private () =
     /// after the first call, or immediately when maxSize is reached (if specified). The
     /// returned non-batched function will return notFound for items that are not found.
     static member Create(getBatched: 'a[] -> Async<('a * 'b)[]>, notFound, waitMs, ?maxSize) : 'a -> Async<'b> =
-        createBatched (fun () -> getBatched) notFound waitMs ValueNone waitMs (defaultArg maxSize Int32.MaxValue) ()
+        createThrottled getBatched notFound waitMs (defaultArg maxSize Int32.MaxValue)
 
     /// Returns a non-batched version of the batched function. The batch is executed waitMs
     /// after the first call, or immediately when maxSize is reached (if specified). The
@@ -591,11 +678,11 @@ type Batch private () =
             waitMs,
             ?maxSize
         ) : 'extra -> 'a -> Async<'b> =
-        createBatched getBatched notFound waitMs ValueNone waitMs (defaultArg maxSize Int32.MaxValue)
+        createThrottledWithExtra getBatched notFound waitMs (defaultArg maxSize Int32.MaxValue)
 
     /// Returns a non-batched version of the batched function. For each call, the batch
     /// execution is pushed forward to minWaitAfterAddMs after the call, but the batch waits
-    /// at least initialWaitMs and at most maxWaitMs  after the first call. The batch is
+    /// at least minWaitMs and at most maxWaitMs after the first call. The batch is
     /// also run immediately when maxSize is reached (if specified). The returned
     /// non-batched function will return notFound for items that are not found.
     static member Create
@@ -607,18 +694,11 @@ type Batch private () =
             maxWaitMs,
             ?maxSize
         ) : 'a -> Async<'b> =
-        createBatched
-            (fun () -> getBatched)
-            notFound
-            minWaitMs
-            (ValueSome minWaitAfterAddMs)
-            maxWaitMs
-            (defaultArg maxSize Int32.MaxValue)
-            ()
+        createDebounced getBatched notFound minWaitAfterAddMs minWaitMs maxWaitMs (defaultArg maxSize Int32.MaxValue)
 
     /// Returns a non-batched version of the batched function. For each call, the batch
     /// execution is pushed forward to minWaitAfterAddMs after the call, but the batch waits
-    /// at least initialWaitMs and at most maxWaitMs  after the first call. The batch is
+    /// at least minWaitMs and at most maxWaitMs after the first call. The batch is
     /// also run immediately when maxSize is reached (if specified). The returned
     /// non-batched function will return notFound for items that are not found.
     ///
@@ -635,10 +715,10 @@ type Batch private () =
             maxWaitMs,
             ?maxSize
         ) : 'extra -> 'a -> Async<'b> =
-        createBatched
+        createDebouncedWithExtra
             getBatched
             notFound
+            minWaitAfterAddMs
             minWaitMs
-            (ValueSome minWaitAfterAddMs)
             maxWaitMs
             (defaultArg maxSize Int32.MaxValue)
