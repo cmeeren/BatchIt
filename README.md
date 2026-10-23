@@ -63,7 +63,7 @@ the non-batched function once, for example as a module-level `let` as shown abov
 everywhere. Don't create it per call or per request:
 
 ```f#
-// Don't do this! Each call creates a new non-batched function, so every batch has a single argument.
+// ❌ Don't do this! Each call creates a new non-batched function, so every batch has a single argument.
 let getPerson id =
     Batch.Create(getPeopleBatched, minWaitAfterAddMs = 10, minWaitMs = 10, maxWaitMs = 500) id
 ```
