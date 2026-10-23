@@ -20,6 +20,11 @@ BatchIt is rewritten from scratch. The API is unchanged, so code using 1.x compi
 * Arguments are now deduplicated with F# structural equality, which was already used to match them with results, so e.g. equal arrays are passed once
 * Batches are now timed with a monotonic clock, so system clock changes no longer delay or hasten them, and waits of 1–2 ms are honored instead of running the batch at once
 
+#### Documentation
+
+* The [README](https://github.com/cmeeren/BatchIt/blob/main/README.md) is revised and now explains which calls share a batch and how to choose waits
+* An [agent skill](https://github.com/cmeeren/BatchIt/blob/main/README.md#agent-skill) helps coding agents use BatchIt and is bundled in the package as `skills/SKILL.md`
+
 ### 1.2.1
 
 * Fixed batches with different `'extra` values overwriting each other's results for otherwise identical arguments

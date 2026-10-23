@@ -1,13 +1,13 @@
 BatchIt
-==============
+=======
 
-BatchIt is a very simple F# library that allows you to write batched async functions and consume them as if they were
-non-batched.
+BatchIt is a small F# library that lets you write a function that handles many arguments at once, such as a database
+query for many IDs, and call it as if it handled one argument at a time. Calls made at about the same time, from
+anywhere in your app, are collected into batches, and each batch runs your function once with the distinct arguments.
 
-It’s useful if you have DB queries that are executed very frequently. This may for example be the case when using
-GraphQL resolvers or similar (e.g. JSON-API with [Felicity](https://github.com/cmeeren/Felicity)). BatchIt will also
-transparently take care of deduplicating your input arguments, so that the batched function receives a distinct set of
-inputs.
+This helps when many independent pieces of code each need one item, for example GraphQL resolvers, JSON:API
+relationships (e.g. with [Felicity](https://github.com/cmeeren/Felicity)), or many concurrent requests that each look up
+the same kind of data.
 
 Installation
 ------------
@@ -19,143 +19,154 @@ Upgrading from 1.x? See the [release notes](https://github.com/cmeeren/BatchIt/b
 Quick start
 -----------
 
-BatchIt centers around these two function signatures:
+BatchIt works with two kinds of functions:
 
-* Normal: `'a -> Async<'b>`
-  * Accepts a single argument `'a` (which can be a tuple or a record if you need multiple values) and returns a single
-    value `'b`
-* Batched: `'a [] -> Async<('a * 'b) []>'`
-  * Accepts an array of `'a` (all the values to use for a single batch) and returns an array of output values `'b`
-    together with their corresponding input values (so that BatchIt can correlate inputs with outputs).
+* The **batched function**, which you write, takes all the arguments of a batch and returns each argument together with
+  its result: `'a array -> Async<('a * 'b) array>`.
+* The **non-batched function**, which `Batch.Create` returns, takes a single argument and returns its result:
+  `'a -> Async<'b>`. This is the function the rest of your code calls.
 
-Your job is to implement the batched function, and then you use BatchIt to configure timing and convert it to the normal
-version. Any calls to the normal version will then be batched using your configuration and your batched function.
-
-### Example
+If you need several values per call, use a tuple or record as the argument.
 
 ```f#
-type Person = { Name: string }
-type FindArgs = { PersonId: Guid; TenantId: Guid }
+open System
+open BatchIt
 
-let getPersonBatched (args: FindArgs []) : Async<(FindArgs * Person option) []> =
-  async {
-    // BatchIt is not concerned with what actually happens inside this function.
+type Person = { Id: Guid; Name: string }
 
-    // Here you can e.g. query a DB with all the args. If using SQL, you might
-    // use TVP or XML to get the args into the query and use INNER JOIN instead
-    // of WHERE to filter your results.
-
-    // Note that the query must return the input args for each row along with the
-    // output values, so that you can create the FindArgs to return, too.
-
-    // Example:
-
-    let! rows = args |> ... // get rows for all input args
-
-    return
-      rows
-      |> Seq.toArray
-      |> Array.groupBy (fun r ->
-          { PersonId = r.inputPersonId; TenantId = r.inputTenantId })
-      |> Array.map (fun (batchKey, rows) ->
-          batchKey,
-	        rows |> Array.tryHead |> Option.map (fun r -> { Name = r.name }))
+let getPeopleBatched (ids: Guid array) : Async<(Guid * Person option) array> =
+    async {
+        // Get all the people in one go, e.g. with a single SQL query.
+        let! people = Db.getPeopleByIds ids
+        return people |> Array.map (fun person -> person.Id, Some person)
     }
 
-// Now create the "normal" function using BatchIt:
-
-open BatchIt
-
-let getPerson : FindArgs -> Async<Person option> =
-  Batch.Create(getPersonBatched, 50, 100, 1000)
-
-// Now any calls to the seemingly normal getPerson function will be batched.
-// Each call will reset wait time to 50ms, and it will wait at least 100ms
-// and at most 1000ms.
+let getPerson: Guid -> Async<Person option> =
+    Batch.Create(getPeopleBatched, minWaitAfterAddMs = 10, minWaitMs = 10, maxWaitMs = 500)
 ```
 
-### Don’t add arguments to the non-batched function
+Calls to `getPerson` that are made at about the same time now share a batch, and IDs that `getPeopleBatched` doesn't
+return a result for give `None`.
 
-The non-batched function needs to be defined without arguments (as a module-level function-typed value), as shown above.
-Don’t do the following:
+Only calls that are in flight at the same time can share a batch. Calls that wait for each other, such as calls awaited
+one at a time in a loop, can't share a batch with each other, and each waits for its own batch, so awaiting 100 calls
+in a loop adds 100 waits. To look up several items in one place, make the calls concurrently:
 
 ```f#
-// Don't do this!
-let getPerson args = Batch.Create(getPersonBatched, 50, 100, 1000) args
+let! people = ids |> Array.map getPerson |> Async.Parallel
 ```
 
-The above would result in a new batched version to be created for every invocation, and no batching would take place (
-all batch sizes would be 1, plus there’d be a big overhead for each call).
+### Create the non-batched function once
 
-If you want to make the non-batched function prettier (e.g. to name the arguments), simply wrap it in another function:
+Only calls to the same non-batched function share batches, and each call to `Batch.Create` returns a new one. Create
+the non-batched function once, for example as a module-level `let` as shown above or a `static let`, and use it
+everywhere. Don't create it per call or per request:
 
 ```f#
-let private getPerson' = Batch.Create(getPersonBatched, 50, 100, 1000)
-
-let getPerson args = getPerson' args
+// Don't do this! Each call creates a new non-batched function, so every batch has a single argument.
+let getPerson id =
+    Batch.Create(getPeopleBatched, minWaitAfterAddMs = 10, minWaitMs = 10, maxWaitMs = 500) id
 ```
 
-Configuration
--------------
+The same happens with a property such as `member _.GetPerson = Batch.Create(...)`, which calls `Batch.Create` each time
+it's accessed.
 
-BatchIt’s only public API is the `Batch.Create` overloads. You have the following options:
-
-* Throttle-like: Execute the batch X ms after the first call
-  * Optionally also limit max batch size
-* Debounce-like: Execute the batch X ms after the last call (timer resets when new calls come in before X ms), but wait
-  at least Y ms and at most Z ms
-  * Optionally also limit max batch size
-* Specify the value the “normal” function should return if the batched output did not contain an item corresponding to
-  the supplied input
-  * For `option`, `voption`, `list`, and `array`, will automatically use `None`, `ValueNone`, `List.empty`,
-    and `Array.empty`, respectively
-  * For other types, you must supply the missing value yourself
-
-Waits are in milliseconds and must be non-negative, `maxWaitMs` must be at least `minWaitMs`, and `maxSize` must be at
-least 1; otherwise, `Batch.Create` throws `ArgumentException`. Arguments are deduplicated and matched with results using
-F# structural equality, so e.g. equal arrays are the same argument.
-
-Extra parameters to the batched function (e.g. connection strings)
-------------------------------------------------------------------
-
-BatchIt supports functions that accept one extra parameter in addition to the argument array. This can be used e.g. for
-passing a connection string. (To pass multiple values, use a tuple or record.) The extra argument will be passed through
-from the non-batched function returned by `Batch.Create`.
-
-Example:
+To name the argument or add documentation, wrap the non-batched function:
 
 ```f#
-let getPersonBatched
-		(connStr: string)
-		(args: FindArgs array)
-		: Async<(FindArgs * Person option) array> =
-  ...  // like shown previously, but obviously uses the connection string somewhere
+let private getPerson' =
+    Batch.Create(getPeopleBatched, minWaitAfterAddMs = 10, minWaitMs = 10, maxWaitMs = 500)
 
-
-open BatchIt
-
-let getPerson : string -> FindArgs -> Async<Person option> =
-  Batch.Create(getPersonBatched, 50, 100, 1000)
+/// Gets the person with the specified ID.
+let getPerson (id: Guid) = getPerson' id
 ```
 
-If the non-batched function is called with different values for the extra argument, all values are still collected and
-run as part of the same batch (regarding timing, max size, etc.), but the batched arguments are grouped by the
-corresponding extra argument value and the batched function is then invoked once for each unique extra value (with the
-corresponding batched arguments).
+When batches run
+----------------
+
+Each call waits until its batch runs, so the waits you configure add latency to every call. Choose them with that in
+mind:
+
+* **Debounce:** `Batch.Create(getBatched, minWaitAfterAddMs, minWaitMs, maxWaitMs)` runs a batch `minWaitAfterAddMs`
+  after its latest call, but at least `minWaitMs` and at most `maxWaitMs` after its first call. While calls keep
+  arriving less than `minWaitAfterAddMs` apart, each one pushes the batch back, so under load calls can wait up to
+  `maxWaitMs`.
+* **Throttle:** `Batch.Create(getBatched, waitMs)` runs a batch `waitMs` after its first call.
+* **Maximum size:** Both accept an optional `maxSize`, which runs a batch as soon as it has that many distinct
+  arguments. Use it when your batched function has an input limit, such as a maximum number of SQL parameters.
+
+A short `minWaitAfterAddMs` and `minWaitMs`, such as 10 ms, is usually enough to collect calls that happen
+concurrently. Set `maxWaitMs` to the most latency you accept under load, such as 500 ms; `maxSize` can also end
+batches early. Longer waits give fewer, larger batches at the cost of latency. With no wait, each call runs in a batch
+of its own.
+
+Waits are in milliseconds. `Batch.Create` throws `ArgumentException` for negative waits, a `maxWaitMs` below
+`minWaitMs`, or a `maxSize` below 1.
+
+Arguments and results
+---------------------
+
+The batched function receives each distinct argument of the batch once, in the order first called. Arguments are
+deduplicated and matched with results using F# structural equality, so return each argument as you
+received it or an equal value. The results can be in any order.
+
+If the results don't contain the argument itself, such as for composite arguments, have the query return the argument
+with each row, for example by joining a table-valued parameter of the arguments. For one-to-many lookups, group the
+rows by argument and return list or array results.
+
+Arguments that the batched function returns no result for get a not-found value, chosen by the result type:
+
+* `None`, `ValueNone`, `[]` and `[||]` for `option`, `voption`, `list` and array results
+* for other result types, the value you pass as `notFound`:
+
+```f#
+let getOrderCount: Guid -> Async<int> =
+    Batch.Create(getOrderCountsBatched, notFound = 0, minWaitAfterAddMs = 10, minWaitMs = 10, maxWaitMs = 500)
+```
+
+If the batched function returns an argument more than once, the last result is used.
+
+For work that returns nothing, such as saving or notifying, the batched function can return `Async<unit>`; the
+non-batched function then also returns `Async<unit>`.
+
+Extra argument (e.g. a connection string)
+-----------------------------------------
+
+The batched function can take one extra argument before the argument array, such as a connection string. (To pass
+several values, use a tuple or record.) The non-batched function then takes the same extra argument:
+
+```f#
+let getPeopleBatched (connectionString: string) (ids: Guid array) : Async<(Guid * Person option) array> =
+    ... // like above, but using the connection string
+
+let getPerson: string -> Guid -> Async<Person option> =
+    Batch.Create(getPeopleBatched, minWaitAfterAddMs = 10, minWaitMs = 10, maxWaitMs = 500)
+```
+
+Calls with different extra values still share a batch's timing and `maxSize`, but the batched function runs once for
+each distinct extra value (compared with F# structural equality), with the arguments of the calls that used it. Values
+that differ per request, such as an `HttpContext` or a request-scoped service, therefore prevent batching across
+requests.
 
 Errors and cancellation
 -----------------------
 
-If the batched function throws or is canceled, the calls it was invoked for throw the same exception or are canceled.
-With extra arguments, this only affects the calls with the same extra value.
+If the batched function throws or is canceled, the calls it was run for throw the same exception or are canceled. With
+an extra argument, this only affects the calls with the same extra value.
+
+The batched function runs without a cancellation token, since it serves several calls, so canceling a call doesn't
+cancel it.
 
 Execution context
 -----------------
 
-A batch serves several callers, so the batched function runs without any caller’s execution context: it sees default
-ambient values (e.g. `Activity.Current` is `null` and the culture is the thread pool’s default), and its telemetry (e.g.
-SQL dependencies) is not correlated with any of the requests it serves. Callers continue in their own execution context
-and, if they have one, their `SynchronizationContext`.
+A batch serves several callers, so the batched function runs without any caller's execution context: it sees default
+ambient values (e.g. `Activity.Current` and `IHttpContextAccessor.HttpContext` are `null`, and the culture is the thread
+pool's default), and its telemetry (e.g. SQL dependencies) is not correlated with any of the requests it serves. Pass
+anything the batched function needs as arguments or as the extra argument. To observe batch sizes, record them inside
+the batched function.
+
+Callers continue in their own execution context and, if they have one, their `SynchronizationContext`.
 
 Agent skill
 -----------
@@ -164,7 +175,8 @@ The [BatchIt skill](https://github.com/cmeeren/BatchIt/tree/main/.agents/skills/
 BatchIt correctly.
 
 To install it, copy the `.agents/skills/batchit` folder from this repository into your project's skill directory (for
-Codex, `.agents/skills/batchit`), or ask your agent's skill installer to install that folder. Install only `batchit`;
+Codex, `.agents/skills/batchit`; for Claude Code, `.claude/skills/batchit`), or ask your agent's skill installer to
+install that folder. Install only `batchit`;
 `release-batchit` is for maintainers of this library.
 
 The skill is available starting with BatchIt 2.0. Use the Git tag matching your package version (`v/<version>`), or
@@ -179,5 +191,5 @@ it discoverable by your agent.
 Contributing
 ------------
 
-Contributions and ideas are welcome! Please
-see [Contributing.md](https://github.com/cmeeren/BatchIt/blob/main/.github/CONTRIBUTING.md) for details.
+Contributions and ideas are welcome! Please see the
+[contributing guidelines](https://github.com/cmeeren/BatchIt/blob/main/.github/CONTRIBUTING.md) for details.
