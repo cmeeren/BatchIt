@@ -1,7 +1,7 @@
 Release notes
 =============
 
-### Unreleased
+### 2.0.0 (2026-10-24)
 
 BatchIt is rewritten from scratch. The API is unchanged, so code using 1.x compiles as is, and batching works as before apart from the changes below.
 
