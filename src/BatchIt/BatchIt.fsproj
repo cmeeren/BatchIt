@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>netstandard2.0</TargetFramework>
+    <TargetFrameworks>netstandard2.0;net8.0</TargetFrameworks>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>
@@ -24,7 +24,8 @@
     <None Include="..\..\README.md" Pack="true" PackagePath="\" />
     <None Include="..\..\.agents\skills\batchit\SKILL.md" Pack="true" PackagePath="skills/SKILL.md" Visible="false" />
     <PackageReference Update="FSharp.Core" Version="4.6.2" />
-    <PackageReference Include="System.Diagnostics.DiagnosticSource" Version="6.0.0" />
+    <!-- .NET 8 and later include it. -->
+    <PackageReference Include="System.Diagnostics.DiagnosticSource" Version="6.0.0" Condition="'$(TargetFramework)' == 'netstandard2.0'" />
   </ItemGroup>
 
 </Project>

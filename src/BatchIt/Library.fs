@@ -411,7 +411,10 @@ type internal Batcher<'extra, 'a, 'b when 'extra: equality and 'a: equality>
                                 CallCount = 0
                                 TracedCallCount = 0
                                 CallerActivities = Dictionary()
-                                Results = TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
+                                Results =
+                                    TaskCompletionSource<Dictionary<Key<'a>, 'b>>(
+                                        TaskCreationOptions.RunContinuationsAsynchronously
+                                    )
                             }
 
                             batch.Groups[Key extra] <- group

@@ -13,7 +13,8 @@ BatchIt is rewritten from scratch. The API is unchanged, so code using 1.x compi
 
 #### Added
 
-* Optional tracing: each run of a batched function can be recorded as a span from the `BatchIt` activity source, tagged with the batch size, with the batched function's own telemetry nested under it. The span is part of the trace of the calls it serves if they all come from one, such as a single request, and otherwise links to them. See [Tracing](https://github.com/cmeeren/BatchIt/blob/main/README.md#tracing). BatchIt now depends on System.Diagnostics.DiagnosticSource 6.0 or later, which is part of .NET 6 and later.
+* Optional tracing: each run of a batched function can be recorded as a span from the `BatchIt` activity source, tagged with the batch size, with the batched function's own telemetry nested under it. The span is part of the trace of the calls it serves if they all come from one, such as a single request, and otherwise links to them. See [Tracing](https://github.com/cmeeren/BatchIt/blob/main/README.md#tracing).
+* A .NET 8 target, which needs no package besides FSharp.Core. The .NET Standard 2.0 target, used e.g. by .NET Framework apps, now also depends on System.Diagnostics.DiagnosticSource 6.0 or later for tracing.
 
 #### Fixes
 
