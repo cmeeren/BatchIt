@@ -175,7 +175,9 @@ If the batched function throws or is canceled, the calls it was run for throw th
 an extra argument, this only affects the calls with the same extra value.
 
 A canceled call stops waiting at once. The batched function runs without a cancellation token, since it serves several
-calls, so it isn't canceled, and the canceled call's argument stays in its batch.
+calls, so it isn't canceled, and the canceled call's argument stays in its batch. The batched function may therefore
+use the call's argument and extra value after the caller has stopped waiting, so don't pass anything that the caller
+disposes, such as an open connection or transaction.
 
 Execution context
 -----------------
