@@ -113,6 +113,6 @@ gh release view $tag --repo $repo --json tagName,name,url
 - Do not create the GitHub Release before the tag CI has successfully pushed to NuGet and the exact version is available.
 - Use `gh release create --verify-tag` so GitHub does not auto-create or retarget the release tag.
 - Use `--repo cmeeren/BatchIt` for `gh` release and run commands; do not rely on implicit repository context.
-- Do not create duplicate releases or move an existing release tag.
+- Do not create duplicate releases. Do not move a release tag once its package is on NuGet; if the tag CI fails before publishing, ask whether to move the tag to the fixed commit or release a new version.
 - Refresh release notes from tagged content after NuGet publication; do not reuse an older temp file.
 - Do not treat the versioned `PackageReleaseNotes` URL as fully verified until the matching GitHub Release exists.
