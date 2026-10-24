@@ -1,5 +1,6 @@
 module ExecutionContextTests
 
+open System
 open System.Collections.Concurrent
 open System.Threading
 open System.Threading.Tasks
@@ -60,6 +61,75 @@ let ``Callers continue in their own SynchronizationContext`` () =
 
         let! threadAfterCall = result threadAfterCall.Task
         %threadAfterCall.Should().Be(context.ThreadId)
+    }
+
+
+[<Fact>]
+let ``Canceled callers continue in their own execution context`` () =
+    task {
+        let get =
+            fakeBatcher (FakeEnvironment()) (Throttle(ms 100)) Int32.MaxValue (Recorder().Batched)
+
+        use cts = new CancellationTokenSource()
+        let ambientAfterCancel = TaskCompletionSource<string>()
+
+        let call =
+            inContext
+                "caller"
+                (fun () ->
+                    Async.StartImmediateAsTask(
+                        async {
+                            try
+                                do! get 1 |> Async.Ignore
+                            finally
+                                ambientAfterCancel.SetResult ambient.Value
+                        },
+                        cancellationToken = cts.Token
+                    )
+                )
+
+        inContext "canceler" cts.Cancel
+        let! callOutcome = outcome call
+        let! ambientAfterCancel = result ambientAfterCancel.Task
+
+        %callOutcome.Should().Be(Canceled)
+        %ambientAfterCancel.Should().Be("caller")
+    }
+
+
+[<Fact>]
+let ``Canceled callers continue in their own SynchronizationContext`` () =
+    task {
+        let get =
+            fakeBatcher (FakeEnvironment()) (Throttle(ms 100)) Int32.MaxValue (Recorder().Batched)
+
+        use context = new SingleThreadContext()
+        use cts = new CancellationTokenSource()
+        let callAdded = TaskCompletionSource<unit>()
+        let threadAfterCancel = TaskCompletionSource<int>()
+
+        context.Post(
+            (fun _ ->
+                Async.StartImmediate(
+                    async {
+                        try
+                            do! get 1 |> Async.Ignore
+                        finally
+                            threadAfterCancel.SetResult Thread.CurrentThread.ManagedThreadId
+                    },
+                    cts.Token
+                )
+
+                callAdded.SetResult()
+            ),
+            null
+        )
+
+        do! result callAdded.Task
+        cts.Cancel()
+        let! threadAfterCancel = result threadAfterCancel.Task
+
+        %threadAfterCancel.Should().Be(context.ThreadId)
     }
 
 

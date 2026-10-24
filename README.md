@@ -174,8 +174,8 @@ Errors and cancellation
 If the batched function throws or is canceled, the calls it was run for throw the same exception or are canceled. With
 an extra argument, this only affects the calls with the same extra value.
 
-The batched function runs without a cancellation token, since it serves several calls, so canceling a call doesn't
-cancel it.
+A canceled call stops waiting at once. The batched function runs without a cancellation token, since it serves several
+calls, so it isn't canceled, and the canceled call's argument stays in its batch.
 
 Execution context
 -----------------

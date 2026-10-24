@@ -19,6 +19,7 @@ BatchIt is rewritten from scratch. The API is unchanged, so code using 1.x compi
 #### Fixes
 
 * Callers are now canceled when the batched function is canceled, instead of waiting forever
+* Canceled calls now stop waiting at once, instead of when their batch completes
 * A call whose argument or `'extra` value throws when hashed or compared now fails alone; previously, it and all later calls waited forever
 * When the batched function fails for one `'extra` value, only the callers with that value now fail
 * A slow batched call for one `'extra` value no longer delays the callers with other values

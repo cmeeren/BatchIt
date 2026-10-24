@@ -106,14 +106,27 @@ type internal PendingBatch<'extra, 'a, 'b> = {
 [<AutoOpen>]
 module internal TaskHelpers =
 
-    /// Like Async.AwaitTask, but raises the task's own exception instead of an AggregateException.
+    /// Like Async.AwaitTask, but raises the task's own exception instead of an AggregateException, and stops waiting as
+    /// soon as the awaiting computation is canceled.
     let awaitTask (task: Task<'T>) : Async<'T> =
         async {
-            // Async.AwaitTask continues in the caller's SynchronizationContext (if any) and execution context. Awaiting
-            // this continuation instead of the task itself never raises, so the task's own exception can be raised.
-            do!
+            let! cancellationToken = Async.CancellationToken
+
+            // Completes when the task does, or as canceled when the awaiting computation is canceled.
+            let completedOrCanceled =
                 task.ContinueWith(
                     Action<Task<'T>>(ignore),
+                    cancellationToken,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default
+                )
+
+            // Async.AwaitTask continues in the caller's SynchronizationContext (if any) and execution context. Awaiting
+            // this continuation, which never fails or is canceled, lets the task's own exception or the cancellation be
+            // reported as such below.
+            do!
+                completedOrCanceled.ContinueWith(
+                    Action<Task>(ignore),
                     CancellationToken.None,
                     TaskContinuationOptions.ExecuteSynchronously,
                     TaskScheduler.Default
@@ -122,7 +135,10 @@ module internal TaskHelpers =
 
             return!
                 Async.FromContinuations(fun (onSuccess, onError, onCancel) ->
-                    if task.IsCanceled then
+                    if not task.IsCompleted then
+                        // The awaiting computation was canceled.
+                        onCancel (OperationCanceledException cancellationToken)
+                    elif task.IsCanceled then
                         onCancel (OperationCanceledException())
                     elif task.IsFaulted then
                         let ex = task.Exception
@@ -315,6 +331,9 @@ type internal Batcher<'extra, 'a, 'b when 'extra: equality and 'a: equality>
             let setError (ex: exn) =
                 BatchTracing.stopRun activity ex
                 group.Results.TrySetException ex |> ignore
+                // Callers may all have stopped waiting, so mark the exception as observed to avoid
+                // TaskScheduler.UnobservedTaskException.
+                group.Results.Task.Exception |> ignore
 
             let setResults (results: ('a * 'b)[]) =
                 try
