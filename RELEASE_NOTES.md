@@ -1,6 +1,10 @@
 Release notes
 =============
 
+### Unreleased
+
+* The bundled agent skill is now at `skills/batchit/SKILL.md` in the package instead of `skills/SKILL.md`, the layout that the Agent Skills specification and .NET package-skill tools expect. Update anything that reads the old path.
+
 ### 2.0.0 (2026-10-24)
 
 BatchIt is rewritten from scratch. The API is unchanged, so code using 1.x compiles as is, and batching works as before apart from the changes below.

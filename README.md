@@ -229,10 +229,10 @@ The skill is available starting with BatchIt 2.0. Use the Git tag matching your 
 `main` for development builds. Review and commit the installed skill with your project, and update it when upgrading
 BatchIt. Installation is optional and explicit; the NuGet package does not install agent instructions during builds.
 
-The same skill is bundled as `skills/SKILL.md` in the NuGet package. Agents and package-aware tools can read it from
-`<global-packages-folder>/batchit/<version>/skills/SKILL.md` after restore. Run `dotnet nuget locals global-packages
---list` to locate that folder. This copy matches the installed package version; bundling it does not automatically make
-it discoverable by your agent.
+The same skill is bundled as `skills/batchit/SKILL.md` in the NuGet package. Agents and package-aware tools can read it
+from `<global-packages-folder>/batchit/<version>/skills/batchit/SKILL.md` after restore (`.../skills/SKILL.md` in
+BatchIt 2.0.0). Run `dotnet nuget locals global-packages --list` to locate that folder. This copy matches the installed
+package version; bundling it does not automatically make it discoverable by your agent.
 
 Contributing
 ------------

@@ -17,6 +17,6 @@ BatchIt is a small F# library that turns batched async functions into non-batche
 - Use only APIs available in netstandard2.0, FSharp.Core 4.6.2, and System.Diagnostics.DiagnosticSource 6.0.
 - Span names come from the compiled closure type of the user's function passed to `Batch.Create`, so internal wrappers must pass that function, not themselves, as the name source.
 - Test timing and batching logic with the tests' `FakeEnvironment` rather than real sleeps. Keep real-timer tests few, with waits generous enough for loaded CI runners.
-- The consumer skill `.agents/skills/batchit/SKILL.md` is packed into the NuGet package as `skills/SKILL.md`. Update it when user-facing behavior or usage guidance changes.
+- The consumer skill `.agents/skills/batchit/SKILL.md` is packed into the NuGet package as `skills/batchit/SKILL.md`. Update it when user-facing behavior or usage guidance changes.
 - For user-relevant changes, add a concise entry in the `### Unreleased` section in `RELEASE_NOTES.md`, creating that section if it does not exist. Describe the observable effect from the user's perspective rather than internal mechanisms.
 - Keep `README.md` and `RELEASE_NOTES.md` user-facing: behavior, migration impact, and usage guidance, without implementation details or internal-only rationale.
