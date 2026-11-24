@@ -202,8 +202,10 @@ configuration. Each span:
   as `MyApp.People.getPerson` for `let getPerson = Batch.Create(...)` in the module `MyApp.People`. Spans of batchers
   created in classes or pipelines are named after their module, or `BatchIt.Batch` if there is none.
 * is a child of the first call's current activity if all the calls it serves come from one trace, such as a single
-  request. Otherwise, it starts its own trace and links to the current activity of the first call from each trace it
-  serves, up to 128 traces.
+  request. While that activity is running, it's also the span's `Activity.Parent`, so the span inherits its baggage,
+  and processors that copy tags from parents, such as the authenticated user, see it. Otherwise, it starts its own trace and links to the
+  current activity of the first call from each trace it serves, up to 128 traces. Activities with hierarchical IDs
+  count as no activity, since they have no trace ID.
 * has the tags `batchit.batch.size` (the number of distinct arguments) and `batchit.batch.call_count` (the number of
   calls)
 * is the current activity while the batched function runs, so that function's telemetry, such as SQL dependencies,

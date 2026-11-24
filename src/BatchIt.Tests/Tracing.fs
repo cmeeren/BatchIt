@@ -222,6 +222,109 @@ let ``Spans of runs whose calls all come from one trace are children of the firs
 
 
 [<Fact>]
+let ``Spans of runs whose calls all come from one trace have the first call's activity as parent and its baggage`` () =
+    task {
+        use spans = new RecordedSpans()
+        let baggageInBatch = ConcurrentQueue<string>()
+
+        let batched (items: int[]) =
+            async {
+                baggageInBatch.Enqueue(Activity.Current.GetBaggageItem "user")
+                return items |> Array.map (fun item -> item, Some item)
+            }
+
+        let nonBatched = Batch.Create(batched, 200)
+        let request = startRequest "request"
+
+        let first, firstCall =
+            inContext
+                "first"
+                (fun () ->
+                    let first =
+                        (new Activity("first"))
+                            .SetParentId(request.TraceId, request.SpanId)
+                            .AddBaggage("user", "42")
+                            .Start()
+
+                    first, start (nonBatched 1)
+                )
+
+        let _, secondCall = startCallInRequest request "second" (nonBatched 2)
+        let! _ = result firstCall
+        let! _ = result secondCall
+
+        let span = spans.Spans.Should().ContainExactlyOneItem().Whose
+        %span.Parent.Should().BeSameAs(first)
+        %(List.ofSeq baggageInBatch).Should().Be([ "42" ])
+    }
+
+
+[<Fact>]
+let ``Spans of runs whose calls come from one trace are children of the first call's activity after it stops`` () =
+    task {
+        use spans = new RecordedSpans()
+        let nonBatched = Batch.Create(getThingsBatched, 200)
+
+        let callerContext, call =
+            inContext
+                "caller"
+                (fun () ->
+                    let caller = (new Activity("caller")).Start()
+                    let call = start (nonBatched 1)
+                    caller.Stop()
+                    caller.Context, call
+                )
+
+        let! _ = result call
+
+        let span = spans.Spans.Should().ContainExactlyOneItem().Whose
+        %span.TraceId.Should().Be(callerContext.TraceId)
+        %span.ParentSpanId.Should().Be(callerContext.SpanId)
+    }
+
+
+[<Fact>]
+let ``Calls whose activities have hierarchical IDs count as calls without an activity`` () =
+    task {
+        use spans = new RecordedSpans()
+        let baggageInBatch = ConcurrentQueue<string>()
+
+        let batched (items: int[]) =
+            async {
+                baggageInBatch.Enqueue(Activity.Current.GetBaggageItem "user")
+                return items |> Array.map (fun item -> item, Some item)
+            }
+
+        let nonBatched = Batch.Create(batched, 200)
+
+        let startHierarchical name item =
+            inContext
+                name
+                (fun () ->
+                    (new Activity(name))
+                        .SetIdFormat(ActivityIdFormat.Hierarchical)
+                        .AddBaggage("user", name)
+                        .Start()
+                    |> ignore
+
+                    start (nonBatched item)
+                )
+
+        let calls = [ startHierarchical "A" 1; startHierarchical "B" 2 ]
+
+        for call in calls do
+            let! _ = result call
+            ()
+
+        let span = spans.Spans.Should().ContainExactlyOneItem().Whose
+        %span.Parent.Should().BeNull()
+        %span.ParentSpanId.Should().Be(Unchecked.defaultof<ActivitySpanId>)
+        %span.Links.Should().BeEmpty()
+        %(List.ofSeq baggageInBatch).Should().Be([ null ])
+    }
+
+
+[<Fact>]
 let ``Spans of runs whose calls come from several traces link to one activity per trace`` () =
     task {
         use spans = new RecordedSpans()
@@ -281,10 +384,52 @@ let ``If the calls' trace isn't sampled, the batched function's telemetry stays 
             }
 
         // An activity started without a sampler isn't recorded.
-        let callerContext, calls =
-            startWithActivity "request" [ Batch.Create (batched, 0) 1 ]
+        let caller, call =
+            inContext
+                "request"
+                (fun () ->
+                    let caller = (new Activity("request")).Start()
+                    caller, start (Batch.Create (batched, 0) 1)
+                )
 
-        let! _ = result calls.Head
+        let! _ = result call
+
+        let current = currentInBatch.Should().ContainExactlyOneItem().Whose
+        %current.Should().NotBeNull()
+        %current.TraceId.Should().Be(caller.TraceId)
+        %current.ParentSpanId.Should().Be(caller.SpanId)
+        %current.Parent.Should().BeSameAs(caller)
+        %current.Recorded.Should().BeFalse()
+    }
+
+
+[<Fact>]
+let ``If the calls' trace isn't sampled and the first call's activity has stopped, the telemetry stays in the trace``
+    ()
+    =
+    task {
+        use _ = new ParentBasedListener()
+        let currentInBatch = ConcurrentQueue<Activity>()
+
+        let batched (items: int[]) =
+            async {
+                currentInBatch.Enqueue Activity.Current
+                return items |> Array.map (fun item -> item, Some item)
+            }
+
+        let nonBatched = Batch.Create(batched, 200)
+
+        let callerContext, call =
+            inContext
+                "caller"
+                (fun () ->
+                    let caller = (new Activity("caller")).Start()
+                    let call = start (nonBatched 1)
+                    caller.Stop()
+                    caller.Context, call
+                )
+
+        let! _ = result call
 
         let current = currentInBatch.Should().ContainExactlyOneItem().Whose
         %current.Should().NotBeNull()
@@ -382,6 +527,25 @@ let ``Listeners that throw don't affect callers`` (throwOnStart: bool) =
 
         %succeeded.Should().Be(Completed(Some 1))
         %failed.Should().BeOfCase(Faulted).Whose.Message.Should(()).Be("Boom")
+    }
+
+
+[<Fact>]
+let ``If a listener throws when a span starts, the batched function doesn't run in the caller's activity`` () =
+    task {
+        use _ = startThrowingListener true
+        let currentInBatch = ConcurrentQueue<Activity>()
+
+        let batched (items: int[]) =
+            async {
+                currentInBatch.Enqueue Activity.Current
+                return items |> Array.map (fun item -> item, Some item)
+            }
+
+        let _, calls = startWithActivity "caller" [ Batch.Create (batched, 0) 1 ]
+        let! _ = result calls.Head
+
+        %(List.ofSeq currentInBatch).Should().Be([ null ])
     }
 
 

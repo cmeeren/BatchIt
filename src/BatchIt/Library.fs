@@ -90,7 +90,7 @@ type internal BatchGroup<'extra, 'a, 'b> = {
     /// The number of calls that had a current activity while BatchIt's spans were being listened to.
     mutable TracedCallCount: int
     /// The current activity of the first call from each trace, recorded while BatchIt's spans are being listened to.
-    CallerActivities: Dictionary<ActivityTraceId, ActivityContext>
+    CallerActivities: Dictionary<ActivityTraceId, Activity>
     Results: TaskCompletionSource<Dictionary<Key<'a>, 'b>>
 }
 
@@ -197,34 +197,42 @@ module internal BatchTracing =
     /// Returns the span name for a batcher created from the function f (see nameOfType).
     let nameOf (f: obj) = nameOfType (f.GetType().FullName)
 
-    /// Returns the context of the current activity if BatchIt's spans are being listened to.
+    /// Returns the current activity if BatchIt's spans are being listened to and it has a W3C ID. Activities with
+    /// hierarchical IDs have no trace ID, so they can't tell whether calls come from one trace.
     let currentCallerActivity () =
         if source.HasListeners() then
             match Activity.Current with
             | null -> ValueNone
-            | activity -> ValueSome activity.Context
+            | activity when activity.IdFormat = ActivityIdFormat.W3C -> ValueSome activity
+            | _ -> ValueNone
         else
             ValueNone
 
     /// Records the caller's activity for the group's span, unless one from the same trace is recorded already.
-    let addCallerActivity (group: BatchGroup<'extra, 'a, 'b>) (callerActivity: ActivityContext voption) =
+    let addCallerActivity (group: BatchGroup<'extra, 'a, 'b>) (callerActivity: Activity voption) =
         match callerActivity with
-        | ValueSome context ->
+        | ValueSome activity ->
             group.TracedCallCount <- group.TracedCallCount + 1
 
             if
                 group.CallerActivities.Count < maxLinks
-                && not (group.CallerActivities.ContainsKey context.TraceId)
+                && not (group.CallerActivities.ContainsKey activity.TraceId)
             then
-                group.CallerActivities[context.TraceId] <- context
+                group.CallerActivities[activity.TraceId] <- activity
         | ValueNone -> ()
+
+    /// Makes the activity current and returns true, unless it has stopped (Activity.Current then keeps its value).
+    let trySetCurrent (activity: Activity) =
+        Activity.Current <- activity
+        obj.ReferenceEquals(Activity.Current, activity)
 
     // Tracing must never fail callers, so exceptions from listeners below are ignored.
 
     /// Starts the span for a run of a batched function and makes it the current activity, or returns null if nothing
     /// listens to BatchIt's spans. If all the calls it serves come from one trace, such as a single request, the span
-    /// is a child of the first call's activity. Otherwise, it starts its own trace and links to the activities of the
-    /// calls; call this with no current activity for that.
+    /// is a child of the first call's activity, which is also its Activity.Parent while it's running, so that
+    /// listeners can read the caller's tags and the span inherits its baggage. Otherwise, it starts its own trace and
+    /// links to the activities of the calls. Call this with no current activity.
     let startRun (name: string) (group: BatchGroup<'extra, 'a, 'b>) : Activity =
         if source.HasListeners() then
             try
@@ -239,13 +247,21 @@ module internal BatchTracing =
                     else
                         ValueNone
 
+                // With the parent current, spans get it as Activity.Parent; otherwise, only its context.
+                let parentIsCurrent =
+                    match parent with
+                    | ValueSome parent -> trySetCurrent parent
+                    | ValueNone -> false
+
                 let span =
                     match parent with
-                    | ValueSome parent -> source.StartActivity(name, ActivityKind.Internal, parent, tags)
+                    | ValueSome _ when parentIsCurrent ->
+                        source.StartActivity(name, ActivityKind.Internal, Unchecked.defaultof<ActivityContext>, tags)
+                    | ValueSome parent -> source.StartActivity(name, ActivityKind.Internal, parent.Context, tags)
                     | ValueNone ->
                         let links =
                             group.CallerActivities.Values
-                            |> Seq.map (fun context -> ActivityLink(context))
+                            |> Seq.map (fun activity -> ActivityLink(activity.Context))
                             |> Seq.toArray
 
                         source.StartActivity(
@@ -264,11 +280,12 @@ module internal BatchTracing =
                     let placeholder = new Activity(name)
 
                     match parent with
+                    | ValueSome _ when parentIsCurrent -> ()
                     | ValueSome parent ->
-                        placeholder.SetParentId(parent.TraceId, parent.SpanId, parent.TraceFlags)
+                        placeholder.SetParentId(parent.TraceId, parent.SpanId, parent.ActivityTraceFlags)
                         |> ignore
 
-                        placeholder.TraceStateString <- parent.TraceState
+                        placeholder.TraceStateString <- parent.TraceStateString
                     | ValueNone -> ()
 
                     placeholder.Start()
@@ -291,6 +308,9 @@ module internal BatchTracing =
                     |> ignore
 
                 activity.Dispose()
+                // Stopping the span makes the activity that was current when it started, possibly a caller's, current
+                // again; the run's remaining code must not run in that caller's activity.
+                Activity.Current <- null
             with _ ->
                 ()
 
@@ -398,7 +418,7 @@ type internal Batcher<'extra, 'a, 'b when 'extra: equality and 'a: equality>
     do timer <- env.CreateTimer onTimer
 
     /// Adds the item to the pending batch, starting a new batch if needed, and returns the results for its group.
-    let add (extra: 'extra) (item: 'a) (callerActivity: ActivityContext voption) =
+    let add (extra: 'extra) (item: 'a) (callerActivity: Activity voption) =
         let struct (results, fullOrDueBatch) =
             lock
                 sync
