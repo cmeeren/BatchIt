@@ -1,7 +1,7 @@
 Release notes
 =============
 
-### Unreleased
+### 2.1.0 (2026-11-24)
 
 * A batch span whose calls all come from one trace now has the first call's activity as its `Activity.Parent` while that activity runs, not only as its parent ID. The span and the batched function's telemetry now inherit that activity's baggage, and telemetry processors that walk `Activity.Parent`, such as ones copying the authenticated user ID to child spans, now reach the request.
 * The bundled agent skill is now at `skills/batchit/SKILL.md` in the package instead of `skills/SKILL.md`, the layout that the Agent Skills specification and .NET package-skill tools expect. Update anything that reads the old path.
